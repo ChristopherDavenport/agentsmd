@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.1 - 2026-09-20
 
 - Initial release, moved out of `agentskill/instructions` as it stood
   in agentskill v0.0.1: `Chain` finds the AGENTS.md files that apply
