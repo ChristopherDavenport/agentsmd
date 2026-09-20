@@ -1,0 +1,17 @@
+<project_context>
+<project_instructions path="<root>/AGENTS.md">
+# Root
+
+Root rules.
+</project_instructions>
+<project_instructions path="<root>/sub/AGENTS.md">
+# Sub
+
+Sub rules refine root rules.
+</project_instructions>
+<project_instructions path="<root>/sub/deep/CLAUDE.md">
+# Deep
+
+Claude-specific rules, no trailing newline.
+</project_instructions>
+</project_context>
