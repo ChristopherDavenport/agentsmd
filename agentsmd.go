@@ -6,8 +6,10 @@
 // [Chain] collects them farthest first and nearest last, so that when
 // a product includes every file, later text refines earlier text, and
 // says which files it found and left out, so a product can record or
-// show exactly what the model was given and what it was not. [Render]
-// wraps the files the way pi renders project context, one
+// show exactly what the model was given and what it was not. Explicit
+// paths, such as the user's own file outside the tree, come before the
+// chain, since the nearest file is the one that wins. [Render] wraps
+// the files the way pi renders project context, one
 // project_instructions element per file inside project_context. The
 // package imports the standard library alone.
 package agentsmd
@@ -39,9 +41,15 @@ type Options struct {
 	// Root is the directory the walk stops after. Empty means the
 	// file system root. A path outside Root is an error.
 	Root string
-	// Extra are explicit paths appended after the chain, in order,
-	// such as a file in the user's home directory. Missing ones are
-	// skipped.
+	// Extra are explicit paths included before the chain, in order,
+	// such as the user's own file in their home directory, which the
+	// repository's files then refine. Missing ones are skipped.
+	//
+	// They come first because the convention is that the nearest file
+	// wins, and a file that is not in the tree at all is the farthest
+	// of the lot: Codex reads ~/.codex/AGENTS.md first for that
+	// reason. They are also the first charge on Budget, as they are
+	// there.
 	Extra []string
 	// MaxBytes bounds one file; zero means [DefaultMaxBytes]. A larger
 	// file is an error, because a truncated instruction file would
@@ -68,17 +76,21 @@ type File struct {
 // the files it saw and left out, so a product can record or show
 // exactly what the model was given and what it was not.
 type Result struct {
-	// Files are the instruction files to include, farthest first and
-	// nearest last, then Extra.
+	// Files are the instruction files to include: Options.Extra first,
+	// then the chain farthest first and nearest last, so the nearest
+	// file is the last text the model reads and wins.
 	Files []File
 	// Omitted are the files Chain found and did not include, in the
 	// order it met them.
 	Omitted []Omitted
 }
 
-// Omitted is one file [Chain] found and left out.
+// Omitted is one file [Chain] found and left out. A product recording
+// what the model was given as parts, beside the part [Render]
+// produces, names an omitted file by its Path, which is the stable key
+// for the file across runs.
 type Omitted struct {
-	// Path is absolute.
+	// Path is absolute, and is the omitted file's stable key.
 	Path string
 	// Size is the file's size in bytes.
 	Size int64
@@ -116,10 +128,10 @@ func (r Reason) String() string {
 // ErrTooLarge is wrapped in the error of a file over MaxBytes.
 var ErrTooLarge = errors.New("agentsmd: file exceeds size limit")
 
-// Chain returns the instruction files that apply at path: in path's
-// directory and each of its ancestors up to opts.Root, the first file
-// of opts.Names that exists, farthest first and nearest last, followed
-// by opts.Extra in order, within opts.Budget. A file found and not
+// Chain returns the instruction files that apply at path: opts.Extra
+// in order, then, in path's directory and each of its ancestors up to
+// opts.Root, the first file of opts.Names that exists, farthest first
+// and nearest last, within opts.Budget. A file found and not
 // included, because a preferred name shadows it or the budget is
 // spent, is in [Result.Omitted]; only a file that would be included
 // is read, and only such a file over opts.MaxBytes is an error. path
@@ -177,6 +189,22 @@ func Chain(path string, opts Options) (Result, error) {
 		total += int64(len(data))
 		return nil
 	}
+	for _, extra := range opts.Extra {
+		abs, err := filepath.Abs(extra)
+		if err != nil {
+			return Result{}, fmt.Errorf("agentsmd: %w", err)
+		}
+		info, ok, err := stat(abs)
+		if err != nil {
+			return Result{}, err
+		}
+		if !ok {
+			continue
+		}
+		if err := consider(abs, info.Size()); err != nil {
+			return Result{}, err
+		}
+	}
 	for i := len(dirs) - 1; i >= 0; i-- {
 		found := ""
 		for _, name := range names {
@@ -196,22 +224,6 @@ func Chain(path string, opts Options) (Result, error) {
 			if err := consider(p, info.Size()); err != nil {
 				return Result{}, err
 			}
-		}
-	}
-	for _, extra := range opts.Extra {
-		abs, err := filepath.Abs(extra)
-		if err != nil {
-			return Result{}, fmt.Errorf("agentsmd: %w", err)
-		}
-		info, ok, err := stat(abs)
-		if err != nil {
-			return Result{}, err
-		}
-		if !ok {
-			continue
-		}
-		if err := consider(abs, info.Size()); err != nil {
-			return Result{}, err
 		}
 	}
 	return res, nil
@@ -250,9 +262,23 @@ func stat(path string) (os.FileInfo, bool, error) {
 	return info, true, nil
 }
 
+// PartID is the stable identifier of the one instructions part
+// [Render] produces, for a product that records what the model was
+// given as parts rather than as one string. The text of the part
+// changes whenever the working directory moves or a file is edited;
+// the identifier does not, so a reader can tell that this part moved
+// and the others did not. A file considered and left out is named by
+// its own [Omitted.Path].
+const PartID = "agentsmd"
+
 // Render wraps the files as pi does: one project_instructions element
 // per file, with its path as the attribute, inside project_context, in
-// order. No files render as the empty string.
+// order, so the nearest file is last and refines the rest. No files
+// render as the empty string.
+//
+// The result is one instructions part, whose identifier is [PartID]:
+// a product that hands its instructions to a session in parts hands it
+// this whole string under that id, not one part per file.
 func Render(files []File) string {
 	if len(files) == 0 {
 		return ""
