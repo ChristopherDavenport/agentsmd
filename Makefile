@@ -46,11 +46,19 @@ NOTES := $(shell mktemp)
 # is checked, one commit is made, the root is tagged VERSION with the
 # changelog section as the message, and the branch and tag are pushed.
 # TRAILER, when set, is appended to the commit message.
+#
+# The changelog is dated through a temp file rather than sed -i, which is
+# a GNU-ism: BSD sed reads the argument after -i as a backup suffix, so
+# the GNU spelling fails outright on macOS, where these releases are cut.
+# The temp file is removed if sed dies, so a failed run leaves nothing
+# untracked behind for the clean-tree gate to trip over next time.
 release:
 	@test -n "$(VERSION)" || { echo "usage: make release VERSION=vX.Y.Z"; exit 1; }
 	@grep -q '^## Unreleased$$' CHANGELOG.md || { echo "CHANGELOG.md has no Unreleased section"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "working tree is not clean"; exit 1; }
-	sed -i 's/^## Unreleased$$/## $(VERSION) - '"$$(date +%F)"'/' CHANGELOG.md
+	sed 's/^## Unreleased$$/## $(VERSION) - '"$$(date +%F)"'/' CHANGELOG.md > CHANGELOG.md.tmp \
+	  && mv CHANGELOG.md.tmp CHANGELOG.md \
+	  || { rm -f CHANGELOG.md.tmp; exit 1; }
 	$(MAKE) tidy
 	$(MAKE) check
 	git add -A && git commit -q -m "Release $(VERSION)" $(if $(TRAILER),-m "$(TRAILER)")
