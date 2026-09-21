@@ -109,10 +109,13 @@ func TestChain(t *testing.T) {
 			want: []string{rel("sub", "AGENTS.md")},
 		},
 		{
-			name: "extra appended, missing skipped",
+			// Extra comes before the chain, so the nearest file in the
+			// tree is still the last text the model reads. A missing
+			// path, and a directory of that name, are skipped.
+			name: "extra first, missing skipped",
 			path: rel("other"),
 			opts: Options{Root: root, Extra: []string{rel("sub", "deep", "CLAUDE.md"), rel("nowhere.md"), rel("sub")}},
-			want: []string{rel("AGENTS.md"), rel("sub", "deep", "CLAUDE.md")},
+			want: []string{rel("sub", "deep", "CLAUDE.md"), rel("AGENTS.md")},
 		},
 		{
 			name: "outside root",
@@ -169,8 +172,8 @@ func TestChainBudget(t *testing.T) {
 		return info.Size()
 	}
 	rootSize, subSize, deepSize, innerSize := size("AGENTS.md"), size("sub", "AGENTS.md"), size("sub", "deep", "CLAUDE.md"), size("shadow", "inner", "AGENTS.md")
-	if innerSize >= deepSize {
-		t.Fatalf("fixture sizes: inner (%d) must be smaller than deep (%d)", innerSize, deepSize)
+	if rootSize >= innerSize {
+		t.Fatalf("fixture sizes: root (%d) must be smaller than inner (%d), so a budget that stops the chain at inner would have fitted root", rootSize, innerSize)
 	}
 	names := []string{"AGENTS.md", "CLAUDE.md"}
 	over := func(parts ...string) Omitted {
@@ -199,13 +202,13 @@ func TestChainBudget(t *testing.T) {
 			omitted: []Omitted{over("sub", "deep", "CLAUDE.md")},
 		},
 		{
-			// deep does not fit; the smaller inner file after it
-			// would, but the chain stops rather than skips, and both
-			// are reported.
+			// The extra file does not fit; the smaller root file after
+			// it would, but the chain stops rather than skips, and
+			// every file it would have included is reported.
 			name:    "the chain stops at the first file that does not fit",
-			opts:    Options{Root: root, Names: names, Extra: []string{rel("shadow", "inner", "AGENTS.md")}, Budget: rootSize + subSize + innerSize},
-			want:    []string{rel("AGENTS.md"), rel("sub", "AGENTS.md")},
-			omitted: []Omitted{over("sub", "deep", "CLAUDE.md"), over("shadow", "inner", "AGENTS.md")},
+			opts:    Options{Root: root, Names: names, Extra: []string{rel("shadow", "inner", "AGENTS.md")}, Budget: innerSize - 1},
+			want:    []string{},
+			omitted: []Omitted{over("shadow", "inner", "AGENTS.md"), over("AGENTS.md"), over("sub", "AGENTS.md"), over("sub", "deep", "CLAUDE.md")},
 		},
 		{
 			name:    "smaller than the root file yields nothing",
@@ -222,10 +225,13 @@ func TestChainBudget(t *testing.T) {
 			omitted: []Omitted{over("sub", "AGENTS.md"), over("sub", "deep", "CLAUDE.md")},
 		},
 		{
-			name:    "extra shares the budget and comes last",
+			// Extra is the first charge on the budget, as it is the
+			// first text in the prompt, so what a tight budget drops
+			// is the nearest file and not the user's own.
+			name:    "extra shares the budget and comes first",
 			opts:    Options{Root: rel("sub", "deep"), Names: names, Extra: []string{rel("AGENTS.md")}, Budget: deepSize + rootSize - 1},
-			want:    []string{rel("sub", "deep", "CLAUDE.md")},
-			omitted: []Omitted{over("AGENTS.md")},
+			want:    []string{rel("AGENTS.md")},
+			omitted: []Omitted{over("sub", "deep", "CLAUDE.md")},
 		},
 	}
 	for _, tt := range tests {

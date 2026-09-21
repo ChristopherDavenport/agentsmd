@@ -3,8 +3,8 @@
 The [AGENTS.md](https://agents.md/) convention for Go agents: the
 instruction files that apply at a path, found from its directory up to
 a root, one per directory, nearest last, and rendered into the text a
-product puts in its instructions. The module imports the standard
-library alone.
+product puts in its instructions. The nearest file is the last one
+written and wins. The module imports the standard library alone.
 
 ```go
 res, err := agentsmd.Chain(cwd, agentsmd.Options{
@@ -22,18 +22,27 @@ for _, o := range res.Omitted {
 cfg.Instructions = agentsmd.Render(res.Files)
 ```
 
-`Chain` walks from the path's directory to `Root`, takes in each
-directory the first of `Names` that exists, and returns the files
-farthest first and nearest last, then `Extra`, so that later text
-refines earlier text. `Budget` caps the total: the first file that
-would exceed it ends the chain, nothing is cut short, and running out
-is not an error. Every file found and left out, shadowed by a
-preferred name or over budget, is in `Result.Omitted` with its size,
-so a product can tell the user and a session can record what the model
-was not given as well as what it was.
+`Chain` returns `Extra` first, then walks from the path's directory to
+`Root`, takes in each directory the first of `Names` that exists, and
+returns those files farthest first and nearest last, so that later
+text refines earlier text. `Extra` comes first because a file outside
+the tree, such as the user's own in their home directory, is the
+farthest of the lot: Codex reads `~/.codex/AGENTS.md` before the
+repository's files for that reason, and the repository's nearest file
+still has the last word. `Budget` caps the total and is spent in that
+same order: the first file that would exceed it ends the chain,
+nothing is cut short, and running out is not an error. Every file
+found and left out, shadowed by a preferred name or over budget, is in
+`Result.Omitted` with its size and its path, so a product can tell the
+user and a session can record what the model was not given as well as
+what it was.
 
 `Render` wraps the files as pi renders `<project_context>`: one
-`<project_instructions path="...">` per file, in order.
+`<project_instructions path="...">` per file, in order. The result is
+one instructions part, identified by `agentsmd.PartID`: a product that
+records what the model was given in parts rather than as one string
+hands it the whole rendering under that id, and names a file it
+considered and left out by that file's `Omitted.Path`.
 
 The package is about a repository checkout on the local file system.
 It does not expand imports inside files, know any file name specially,
