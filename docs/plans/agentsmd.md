@@ -28,7 +28,7 @@ skills module.
 ## Non-goals
 
 - Deciding which names apply. Codex reads `AGENTS.override.md` then
-  `AGENTS.md`; Claude Code reads `CLAUDE.md`; dex wants both. The
+  `AGENTS.md`; Claude Code reads `CLAUDE.md`; dax wants both. The
   caller lists names in preference order and the package knows none
   specially.
 - Imports inside a file (`@path` in CLAUDE.md). AGENTS.md has none. A
@@ -55,7 +55,7 @@ func Chain(path string, opts Options) (Result, error)
 type Options struct {
     Names    []string // tried in order per directory, first found wins; default: AGENTS.md
     Root     string   // stop after this directory; default: the filesystem root
-    Extra    []string // explicit paths appended last, such as ~/.dex/AGENTS.md; missing ones are skipped
+    Extra    []string // explicit paths appended last, such as ~/.dax/AGENTS.md; missing ones are skipped
     MaxBytes int64    // per file that is included; default 1 MiB, a larger one is an error
     Budget   int64    // total; the first file that would exceed it ends the chain, without error; default: none
 }
@@ -87,7 +87,7 @@ session's working directory and the file a tool is about to touch in a
 monorepo. `Names` is a preference order and yields at most one file
 per directory, as Codex reads `AGENTS.override.md` before `AGENTS.md`,
 so a developer can shadow a committed file without deleting it, and
-dex can let `CLAUDE.md` stand in where `AGENTS.md` is absent; the
+dax can let `CLAUDE.md` stand in where `AGENTS.md` is absent; the
 package knows no name specially. `Budget` caps the total, the way the
 reference's `project_doc_max_bytes` does: the first file that would
 exceed it, and everything after it, is left out and `Chain` returns

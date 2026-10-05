@@ -10,7 +10,7 @@ written and wins. The module imports the standard library alone.
 res, err := agentsmd.Chain(cwd, agentsmd.Options{
 	Names:  []string{"AGENTS.override.md", "AGENTS.md"},
 	Root:   repoRoot,
-	Extra:  []string{filepath.Join(home, ".dex", "AGENTS.md")},
+	Extra:  []string{filepath.Join(home, ".dax", "AGENTS.md")},
 	Budget: 32 << 10,
 })
 if err != nil {
