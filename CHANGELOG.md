@@ -5,6 +5,20 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: `Options.FS`. When set, `Chain` walks and reads the chain
+  through that `fs.FS` instead of the OS file system, so a product
+  whose project is in a container or a remote workspace reads the
+  project's AGENTS.md files where the project is. The path and `Root`
+  are `fs.ValidPath` names in it (`"."` its root, and the default
+  `Root`), files are found with `fs.Stat` and read with `fs.ReadFile`,
+  and `File.Path`, `Omitted.Path` and `Omitted.By` are the names in
+  the FS. The walk never names anything outside the FS and resolves no
+  links itself, so a link that a confining FS refuses is an error, not
+  a missing file. `Extra` stays OS paths. With `FS` nil nothing
+  changes.
+
 ## v0.0.2 - 2026-09-21
 
 - **Breaking**: `Options.Extra` is included before the chain rather
