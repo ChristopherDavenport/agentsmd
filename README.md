@@ -44,10 +44,30 @@ records what the model was given in parts rather than as one string
 hands it the whole rendering under that id, and names a file it
 considered and left out by that file's `Omitted.Path`.
 
-The package is about a repository checkout on the local file system.
-It does not expand imports inside files, know any file name specially,
-or fetch anything; a product with a remote checkout hands its files to
-`Render` itself.
+The walk reads the OS file system unless `Options.FS` is set. A
+product whose project lives somewhere it has no OS path for, such as a
+container or a remote workspace, passes that project as an `fs.FS`:
+
+```go
+res, err := agentsmd.Chain("services/api", agentsmd.Options{
+	FS:    workspace.FS(), // "." is the project's root
+	Root:  ".",
+	Extra: []string{filepath.Join(home, ".dax", "AGENTS.md")},
+})
+```
+
+The path, `Root` and the chain's directories are then names in the FS
+(`fs.ValidPath`, `"."` for its root), files are found with `fs.Stat`
+and read with `fs.ReadFile`, and `File.Path` and `Omitted.Path` are
+the names in the FS, which the product maps to what it shows before
+`Render`. The walk only asks the FS for names below `"."` and resolves
+no links itself, so an FS that confines, such as `os.Root.FS()`, keeps
+its confinement: a link it refuses is `Chain`'s error, not a missing
+file. `Extra` stays OS paths, since the user's own file is not part of
+the project.
+
+The package does not expand imports inside files, know any file name
+specially, or fetch anything.
 
 ## Development
 

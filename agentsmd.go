@@ -8,7 +8,10 @@
 // says which files it found and left out, so a product can record or
 // show exactly what the model was given and what it was not. Explicit
 // paths, such as the user's own file outside the tree, come before the
-// chain, since the nearest file is the one that wins. [Render] wraps
+// chain, since the nearest file is the one that wins. The walk reads
+// the OS file system, or an [fs.FS] a product supplies in
+// [Options.FS] when the project is somewhere else, such as a container
+// or a remote workspace. [Render] wraps
 // the files the way pi renders project context, one
 // project_instructions element per file inside project_context. The
 // package imports the standard library alone.
@@ -17,7 +20,9 @@ package agentsmd
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,6 +37,19 @@ var DefaultNames = []string{"AGENTS.md"}
 
 // Options configure [Chain].
 type Options struct {
+	// FS, when set, is the file system the walk reads: the path given
+	// to Chain, Root and every directory of the chain are names in it,
+	// valid by [fs.ValidPath] ("." is its root), and the files are
+	// found with [fs.Stat] and read with [fs.ReadFile]. The walk never
+	// leaves FS: it only asks FS for names it builds below "." and
+	// does not resolve links itself, so an FS that confines, such as
+	// [os.Root.FS], keeps its confinement, and an error it returns,
+	// such as a link refused for leaving it, is Chain's error. Only an
+	// [fs.ErrNotExist] means no file. Nil means the OS file system.
+	//
+	// Extra are OS paths either way: the user's own file in their home
+	// directory is not part of the project.
+	FS fs.FS
 	// Names are the file names looked for in each directory, in order
 	// of preference: the first one found is that directory's file and
 	// the rest are not read, so a product can let AGENTS.override.md
@@ -39,9 +57,10 @@ type Options struct {
 	// absent, as Codex reads them. Empty means [DefaultNames].
 	Names []string
 	// Root is the directory the walk stops after. Empty means the
-	// file system root. A path outside Root is an error.
+	// file system root, which with FS is ".". A path outside Root is
+	// an error.
 	Root string
-	// Extra are explicit paths included before the chain, in order,
+	// Extra are explicit OS paths included before the chain, in order,
 	// such as the user's own file in their home directory, which the
 	// repository's files then refine. Missing ones are skipped.
 	//
@@ -66,7 +85,10 @@ type Options struct {
 
 // File is one instruction file, read verbatim.
 type File struct {
-	// Path is absolute.
+	// Path is absolute, or, for a file of the chain read through
+	// [Options.FS], its name in that FS. A product that shows the
+	// file somewhere else maps the name to what it shows, such as a
+	// workspace's root joined with it, before [Render].
 	Path string
 	// Content is the file's bytes as a string.
 	Content string
@@ -90,7 +112,8 @@ type Result struct {
 // produces, names an omitted file by its Path, which is the stable key
 // for the file across runs.
 type Omitted struct {
-	// Path is absolute, and is the omitted file's stable key.
+	// Path is absolute, or the name in [Options.FS] as for
+	// [File.Path], and is the omitted file's stable key.
 	Path string
 	// Size is the file's size in bytes.
 	Size int64
@@ -136,7 +159,8 @@ var ErrTooLarge = errors.New("agentsmd: file exceeds size limit")
 // spent, is in [Result.Omitted]; only a file that would be included
 // is read, and only such a file over opts.MaxBytes is an error. path
 // may be a directory, an existing file, or a file about to be
-// created, whose directory is then the start.
+// created, whose directory is then the start. With opts.FS set, path
+// is a name in it and the chain's files are named as they are in it.
 func Chain(path string, opts Options) (Result, error) {
 	names := opts.Names
 	if len(names) == 0 {
@@ -146,33 +170,21 @@ func Chain(path string, opts Options) (Result, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxBytes
 	}
-	start, err := startDir(path)
+	tree := osTree()
+	if opts.FS != nil {
+		tree = fsTree(opts.FS)
+	}
+	dirs, err := tree.dirs(path, opts.Root)
 	if err != nil {
 		return Result{}, err
-	}
-	root := ""
-	if opts.Root != "" {
-		root, err = filepath.Abs(opts.Root)
-		if err != nil {
-			return Result{}, fmt.Errorf("agentsmd: %w", err)
-		}
-		if start != root && !strings.HasPrefix(start, root+string(filepath.Separator)) {
-			return Result{}, fmt.Errorf("agentsmd: %s is outside root %s", path, root)
-		}
-	}
-	var dirs []string
-	for dir := start; ; dir = filepath.Dir(dir) {
-		dirs = append(dirs, dir)
-		if dir == root || filepath.Dir(dir) == dir {
-			break
-		}
 	}
 	var res Result
 	var total int64
 	spent := false
-	// consider includes the file at path when the budget allows and
-	// records it as omitted from the first file that does not fit.
-	consider := func(path string, size int64) error {
+	// consider includes the file at path, read with read, when the
+	// budget allows and records it as omitted from the first file that
+	// does not fit.
+	consider := func(path string, size int64, read func(string) ([]byte, error)) error {
 		if spent || (opts.Budget > 0 && total+size > opts.Budget) {
 			spent = true
 			res.Omitted = append(res.Omitted, Omitted{Path: path, Size: size, Reason: OverBudget})
@@ -181,7 +193,7 @@ func Chain(path string, opts Options) (Result, error) {
 		if size > maxBytes {
 			return fmt.Errorf("%w: %s is %d bytes, limit %d", ErrTooLarge, path, size, maxBytes)
 		}
-		data, err := os.ReadFile(path)
+		data, err := read(path)
 		if err != nil {
 			return fmt.Errorf("agentsmd: %w", err)
 		}
@@ -201,15 +213,18 @@ func Chain(path string, opts Options) (Result, error) {
 		if !ok {
 			continue
 		}
-		if err := consider(abs, info.Size()); err != nil {
+		if err := consider(abs, info.Size(), os.ReadFile); err != nil {
 			return Result{}, err
 		}
 	}
 	for i := len(dirs) - 1; i >= 0; i-- {
 		found := ""
 		for _, name := range names {
-			p := filepath.Join(dirs[i], name)
-			info, ok, err := stat(p)
+			p, err := tree.join(dirs[i], name)
+			if err != nil {
+				return Result{}, err
+			}
+			info, ok, err := tree.stat(p)
 			if err != nil {
 				return Result{}, err
 			}
@@ -221,12 +236,114 @@ func Chain(path string, opts Options) (Result, error) {
 				continue
 			}
 			found = p
-			if err := consider(p, info.Size()); err != nil {
+			if err := consider(p, info.Size(), tree.read); err != nil {
 				return Result{}, err
 			}
 		}
 	}
 	return res, nil
+}
+
+// tree is where the chain is walked: the OS file system, or an
+// [fs.FS].
+type tree struct {
+	// dirs returns the directories of the chain, nearest first, from
+	// the path Chain was given up to root.
+	dirs func(path, root string) ([]string, error)
+	// join names the file called name in dir.
+	join func(dir, name string) (string, error)
+	// stat reports the file when it exists and is not a directory.
+	stat func(name string) (fs.FileInfo, bool, error)
+	// read returns the file's bytes.
+	read func(name string) ([]byte, error)
+}
+
+// osTree walks the OS file system with absolute paths.
+func osTree() tree {
+	return tree{
+		dirs: osDirs,
+		join: func(dir, name string) (string, error) { return filepath.Join(dir, name), nil },
+		stat: stat,
+		read: os.ReadFile,
+	}
+}
+
+// osDirs returns the absolute directories from path's up to root, or
+// to the file system root when root is empty.
+func osDirs(path, root string) ([]string, error) {
+	start, err := startDir(path)
+	if err != nil {
+		return nil, err
+	}
+	if root != "" {
+		root, err = filepath.Abs(root)
+		if err != nil {
+			return nil, fmt.Errorf("agentsmd: %w", err)
+		}
+		if start != root && !strings.HasPrefix(start, root+string(filepath.Separator)) {
+			return nil, fmt.Errorf("agentsmd: %s is outside root %s", path, root)
+		}
+	}
+	var dirs []string
+	for dir := start; ; dir = filepath.Dir(dir) {
+		dirs = append(dirs, dir)
+		if dir == root || filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	return dirs, nil
+}
+
+// fsTree walks fsys by the names in it. Every name it asks fsys for
+// is checked with [fs.ValidPath] first, so the walk never names
+// anything outside fsys; whether a name inside it may lead outside,
+// through a link, is fsys's to decide.
+func fsTree(fsys fs.FS) tree {
+	return tree{
+		dirs: func(name, root string) ([]string, error) { return fsDirs(fsys, name, root) },
+		join: func(dir, name string) (string, error) {
+			p := path.Join(dir, name)
+			if !fs.ValidPath(p) {
+				return "", fmt.Errorf("agentsmd: %q in %q is not a valid name in the file system", name, dir)
+			}
+			return p, nil
+		},
+		stat: func(name string) (fs.FileInfo, bool, error) { return fileInfo(fs.Stat(fsys, name)) },
+		read: func(name string) ([]byte, error) { return fs.ReadFile(fsys, name) },
+	}
+}
+
+// fsDirs returns the directories in fsys from name's up to root, or
+// to "." when root is empty.
+func fsDirs(fsys fs.FS, name, root string) ([]string, error) {
+	if root == "" {
+		root = "."
+	}
+	for _, n := range []string{name, root} {
+		if !fs.ValidPath(n) {
+			return nil, fmt.Errorf("agentsmd: %q is not a valid name in the file system", n)
+		}
+	}
+	start := name
+	info, err := fs.Stat(fsys, name)
+	switch {
+	case err == nil && info.IsDir():
+	case err == nil || errors.Is(err, fs.ErrNotExist):
+		start = path.Dir(name)
+	default:
+		return nil, fmt.Errorf("agentsmd: %w", err)
+	}
+	if root != "." && start != root && !strings.HasPrefix(start, root+"/") {
+		return nil, fmt.Errorf("agentsmd: %s is outside root %s", name, root)
+	}
+	var dirs []string
+	for dir := start; ; dir = path.Dir(dir) {
+		dirs = append(dirs, dir)
+		if dir == root || dir == "." {
+			break
+		}
+	}
+	return dirs, nil
 }
 
 // startDir returns the absolute directory the walk starts from.
@@ -249,9 +366,15 @@ func startDir(path string) (string, error) {
 // stat reports the file when it exists and is not a directory. A
 // missing path, or a directory of that name, is not a file.
 func stat(path string) (os.FileInfo, bool, error) {
-	info, err := os.Stat(path)
+	return fileInfo(os.Stat(path))
+}
+
+// fileInfo is [stat] for the result of any stat: the file when it
+// exists and is not a directory, nothing for a missing name or a
+// directory, and any other error as an error.
+func fileInfo(info fs.FileInfo, err error) (fs.FileInfo, bool, error) {
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("agentsmd: %w", err)

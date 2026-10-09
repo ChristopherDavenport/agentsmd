@@ -5,9 +5,10 @@ Issues and pull requests are welcome.
 ## Before you start
 
 This library finds and renders AGENTS.md files; it does not decide
-which names a product looks for, expand imports inside a file, fetch
-anything or read outside the local file system. A change that needs a
-transport or a prompt builder belongs in the product.
+which names a product looks for, expand imports inside a file or fetch
+anything. It reads the local file system, or an `fs.FS` the product
+hands it; a change that needs a transport or a prompt builder belongs
+in the product.
 `docs/plans/agentsmd.md` is the design; read it first.
 
 For anything larger than a bug fix, open an issue first so the shape of
