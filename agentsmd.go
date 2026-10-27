@@ -193,12 +193,12 @@ var ErrTooLarge = errors.New("agentsmd: file exceeds size limit")
 // in order, then, in path's directory and each of its ancestors up to
 // opts.Root, the first of opts.Names that the directory lists,
 // farthest first and nearest last, within opts.Budget and
-// opts.RenderedBudget. A file found
-// and not included, because a preferred name shadows it or the budget
-// is spent, is in [Result.Omitted]. A file is read only when its
-// reported size fits the budget, and the bounds apply to the bytes it
-// reads: more than opts.MaxBytes is an error, and more than the budget
-// left omits it. A directory that cannot be listed is an error. path
+// opts.RenderedBudget. A file found and not included, because a
+// preferred name shadows it or a budget is spent, is in
+// [Result.Omitted]. A file is read only when its reported size fits
+// the budgets, and the bounds apply to the bytes it reads: more than
+// opts.MaxBytes is an error, and more than a budget has left omits it.
+// A directory that cannot be listed is an error. path
 // may be a directory, an existing file, or a file about to be
 // created, whose directory is then the start. With opts.FS set, path
 // is a name in it and the chain's files are named as they are in it.
