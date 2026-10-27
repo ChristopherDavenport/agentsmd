@@ -23,20 +23,21 @@ cfg.Instructions = agentsmd.Render(res.Files)
 ```
 
 `Chain` returns `Extra` first, then walks from the path's directory to
-`Root`, takes in each directory the first of `Names` that the
-directory lists under exactly that spelling, and returns those files
-farthest first and nearest last, so that later
-text refines earlier text. `Extra` comes first because a file outside
-the tree, such as the user's own in their home directory, is the
-farthest of the lot: Codex reads `~/.codex/AGENTS.md` before the
-repository's files for that reason, and the repository's nearest file
-still has the last word. `Budget` caps the total and is spent in that
-same order: the first file that would exceed it ends the chain,
-nothing is cut short, and running out is not an error. Every file
-found and left out, shadowed by a preferred name or over budget, is in
-`Result.Omitted` with its size and its path, so a product can tell the
-user and a session can record what the model was not given as well as
-what it was.
+`Root`, takes in each directory the first of `Names` that the directory
+lists under exactly that spelling, and returns those files farthest
+first and nearest last, so that later text refines earlier text. `Extra`
+comes first because a file outside the tree, such as the user's own in
+their home directory, is the farthest of the lot: Codex reads
+`~/.codex/AGENTS.md` before the repository's files for that reason, and
+the repository's nearest file still has the last word. `Budget` caps the
+total and is spent in that same order: the first file that would exceed
+it ends the chain, nothing is cut short, and running out is not an
+error. `Budget` and `MaxBytes` count the bytes a file reads, not the
+size its stat reported, so an `FS` that expands a file as it reads it is
+held to them too. Every file found and left out, shadowed by a preferred
+name or over budget, is in `Result.Omitted` with its size and its path,
+so a product can tell the user and a session can record what the model
+was not given as well as what it was.
 
 `Render` wraps the files as pi renders `<project_context>`: one
 `<project_instructions path="...">` per file, in order. The result is
@@ -59,14 +60,13 @@ res, err := agentsmd.Chain("services/api", agentsmd.Options{
 
 The path, `Root` and the chain's directories are then names in the FS
 (`fs.ValidPath`, `"."` for its root), directories are listed with
-`fs.ReadDir`, files are stat'd with `fs.Stat` and read with
-`fs.ReadFile`, and `File.Path` and `Omitted.Path` are
-the names in the FS, which the product maps to what it shows before
-`Render`. The walk only asks the FS for names below `"."` and resolves
-no links itself, so an FS that confines, such as `os.Root.FS()`, keeps
-its confinement: a link it refuses is `Chain`'s error, not a missing
-file. `Extra` stays OS paths, since the user's own file is not part of
-the project.
+`fs.ReadDir`, files are stat'd with `fs.Stat` and read through `Open`,
+and `File.Path` and `Omitted.Path` are the names in the FS, which the
+product maps to what it shows before `Render`. The walk only asks the FS
+for names below `"."` and resolves no links itself, so an FS that
+confines, such as `os.Root.FS()`, keeps its confinement: a link it
+refuses is `Chain`'s error, not a missing file. `Extra` stays OS paths,
+since the user's own file is not part of the project.
 
 The package does not expand imports inside files, know any file name
 specially, or fetch anything.

@@ -20,7 +20,9 @@ package agentsmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -39,17 +41,21 @@ var DefaultNames = []string{"AGENTS.md"}
 type Options struct {
 	// FS, when set, is the file system the walk reads: the path given
 	// to Chain, Root and every directory of the chain are names in it,
-	// valid by [fs.ValidPath] ("." is its root), and the files are
-	// found by listing a directory with [fs.ReadDir] and [fs.Stat] and
-	// read through Open. The walk never
-	// leaves FS: it only asks FS for names it builds below "." and
-	// does not resolve links itself, so an FS that confines, such as
+	// valid by [fs.ValidPath] ("." is its root), directories are
+	// listed with [fs.ReadDir], and files are stat'd with [fs.Stat]
+	// and read through Open. The walk never leaves FS: it only asks
+	// FS for names it builds below "." and does not resolve links
+	// itself, so an FS that confines, such as
 	// [os.Root.FS], keeps its confinement, and an error it returns,
 	// such as a link refused for leaving it, is Chain's error. Only an
 	// [fs.ErrNotExist] means no file. Nil means the OS file system.
 	//
 	// Extra are OS paths either way: the user's own file in their home
 	// directory is not part of the project.
+	//
+	// The bounds, MaxBytes and Budget, apply to the bytes a file
+	// reads, which an FS that changes a file's text, such as one that
+	// expands imports, may make larger than its Stat says.
 	FS fs.FS
 	// Names are the file names looked for in each directory, in order
 	// of preference: the first one found is that directory's file and
@@ -76,9 +82,10 @@ type Options struct {
 	// reason. They are also the first charge on Budget, as they are
 	// there.
 	Extra []string
-	// MaxBytes bounds one file; zero means [DefaultMaxBytes]. A larger
-	// file is an error, because a truncated instruction file would
-	// silently change what the model is told.
+	// MaxBytes bounds one file; zero means [DefaultMaxBytes]. A file
+	// that reads larger is an error, because a truncated instruction
+	// file would silently change what the model is told. Chain reads
+	// no more than one byte past it to find that out.
 	MaxBytes int64
 	// Budget bounds the total bytes of every file returned. The first
 	// file that would take the total over it, and every file after
@@ -86,6 +93,11 @@ type Options struct {
 	// returns what fits without error, so a large file deep in a tree
 	// degrades the prompt rather than failing the run. No file is cut
 	// short. Zero means no budget.
+	//
+	// The bytes charged are the bytes read. The size the file system
+	// reports decides only whether a file is read: one whose reported
+	// size does not fit is left out unread, and one that reads more
+	// than fits is left out with the size it read.
 	Budget int64
 }
 
@@ -121,7 +133,9 @@ type Omitted struct {
 	// Path is absolute, or the name in [Options.FS] as for
 	// [File.Path], and is the omitted file's stable key.
 	Path string
-	// Size is the file's size in bytes.
+	// Size is the file's size in bytes: the bytes read, for a file
+	// Chain read and left out over budget, and otherwise the size the
+	// file system reported.
 	Size int64
 	// Reason says why the file is not in [Result.Files].
 	Reason Reason
@@ -162,9 +176,10 @@ var ErrTooLarge = errors.New("agentsmd: file exceeds size limit")
 // opts.Root, the first of opts.Names that the directory lists,
 // farthest first and nearest last, within opts.Budget. A file found
 // and not included, because a preferred name shadows it or the budget
-// is spent, is in [Result.Omitted]; only a file that would be
-// included is read, and only such a file over opts.MaxBytes is an
-// error. A directory that cannot be listed is an error. path
+// is spent, is in [Result.Omitted]. A file is read only when its
+// reported size fits the budget, and the bounds apply to the bytes it
+// reads: more than opts.MaxBytes is an error, and more than the budget
+// left omits it. A directory that cannot be listed is an error. path
 // may be a directory, an existing file, or a file about to be
 // created, whose directory is then the start. With opts.FS set, path
 // is a name in it and the chain's files are named as they are in it.
@@ -193,24 +208,35 @@ func Chain(path string, opts Options) (Result, error) {
 	var res Result
 	var total int64
 	spent := false
-	// consider includes the file at path, read with read, when the
+	// over records the file at path as omitted over budget, and the
+	// chain as spent.
+	over := func(path string, size int64) {
+		spent = true
+		res.Omitted = append(res.Omitted, Omitted{Path: path, Size: size, Reason: OverBudget})
+	}
+	// consider includes the file at path, opened with open, when the
 	// budget allows and records it as omitted from the first file that
-	// does not fit.
-	consider := func(path string, size int64, read func(string) ([]byte, error)) error {
+	// does not fit. The reported size decides whether to read it; the
+	// bytes read decide the rest.
+	consider := func(path string, size int64, open func(string) (io.ReadCloser, error)) error {
 		if spent || (opts.Budget > 0 && total+size > opts.Budget) {
-			spent = true
-			res.Omitted = append(res.Omitted, Omitted{Path: path, Size: size, Reason: OverBudget})
+			over(path, size)
 			return nil
 		}
-		if size > maxBytes {
-			return fmt.Errorf("%w: %s is %d bytes, limit %d", ErrTooLarge, path, size, maxBytes)
-		}
-		data, err := read(path)
+		data, err := readAtMost(open, path, maxBytes)
 		if err != nil {
 			return fmt.Errorf("agentsmd: %w", err)
 		}
+		n := int64(len(data))
+		if n > maxBytes {
+			return fmt.Errorf("%w: %s is more than %d bytes", ErrTooLarge, path, maxBytes)
+		}
+		if opts.Budget > 0 && total+n > opts.Budget {
+			over(path, n)
+			return nil
+		}
 		res.Files = append(res.Files, File{Path: path, Content: string(data)})
-		total += int64(len(data))
+		total += n
 		return nil
 	}
 	for _, extra := range opts.Extra {
@@ -225,7 +251,7 @@ func Chain(path string, opts Options) (Result, error) {
 		if !ok {
 			continue
 		}
-		if err := consider(abs, info.Size(), os.ReadFile); err != nil {
+		if err := consider(abs, info.Size(), openOS); err != nil {
 			return Result{}, err
 		}
 	}
@@ -255,7 +281,7 @@ func Chain(path string, opts Options) (Result, error) {
 				continue
 			}
 			found = p
-			if err := consider(p, info.Size(), tree.read); err != nil {
+			if err := consider(p, info.Size(), tree.open); err != nil {
 				return Result{}, err
 			}
 		}
@@ -278,8 +304,8 @@ type tree struct {
 	join func(dir, name string) (string, error)
 	// stat reports the file when it exists and is not a directory.
 	stat func(name string) (fs.FileInfo, bool, error)
-	// read returns the file's bytes.
-	read func(name string) ([]byte, error)
+	// open opens the file for reading.
+	open func(name string) (io.ReadCloser, error)
 }
 
 // osTree walks the OS file system with absolute paths.
@@ -289,7 +315,7 @@ func osTree() tree {
 		list: func(dir string) (map[string]bool, error) { return listed(os.ReadDir(dir)) },
 		join: func(dir, name string) (string, error) { return filepath.Join(dir, name), nil },
 		stat: stat,
-		read: os.ReadFile,
+		open: openOS,
 	}
 }
 
@@ -335,7 +361,7 @@ func fsTree(fsys fs.FS) tree {
 			return p, nil
 		},
 		stat: func(name string) (fs.FileInfo, bool, error) { return fileInfo(fs.Stat(fsys, name)) },
-		read: func(name string) ([]byte, error) { return fs.ReadFile(fsys, name) },
+		open: func(name string) (io.ReadCloser, error) { return fsys.Open(name) },
 	}
 }
 
@@ -370,6 +396,25 @@ func fsDirs(fsys fs.FS, name, root string) ([]string, error) {
 		}
 	}
 	return dirs, nil
+}
+
+// openOS opens an OS file for reading.
+func openOS(name string) (io.ReadCloser, error) { return os.Open(name) }
+
+// readAtMost reads the file at name up to one byte past limit, so a
+// file over the limit is known to be over without being read through:
+// an FS that expands a file, or a file still being written, cannot make
+// Chain read far past the bound only to refuse it.
+func readAtMost(open func(string) (io.ReadCloser, error), name string, limit int64) ([]byte, error) {
+	f, err := open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	return io.ReadAll(io.LimitReader(f, limit))
 }
 
 // startDir returns the absolute directory the walk starts from.
