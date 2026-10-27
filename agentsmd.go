@@ -40,7 +40,8 @@ type Options struct {
 	// FS, when set, is the file system the walk reads: the path given
 	// to Chain, Root and every directory of the chain are names in it,
 	// valid by [fs.ValidPath] ("." is its root), and the files are
-	// found with [fs.Stat] and read with [fs.ReadFile]. The walk never
+	// found by listing a directory with [fs.ReadDir] and [fs.Stat] and
+	// read through Open. The walk never
 	// leaves FS: it only asks FS for names it builds below "." and
 	// does not resolve links itself, so an FS that confines, such as
 	// [os.Root.FS], keeps its confinement, and an error it returns,
@@ -55,6 +56,11 @@ type Options struct {
 	// the rest are not read, so a product can let AGENTS.override.md
 	// shadow AGENTS.md, or CLAUDE.md stand in where AGENTS.md is
 	// absent, as Codex reads them. Empty means [DefaultNames].
+	//
+	// A name is found when it equals, byte for byte, the name of an
+	// entry the directory lists, whatever the host file system's case
+	// rules, so agents.md is not AGENTS.md on macOS either. Each name
+	// is one path element; any other is an error.
 	Names []string
 	// Root is the directory the walk stops after. Empty means the
 	// file system root, which with FS is ".". A path outside Root is
@@ -153,11 +159,12 @@ var ErrTooLarge = errors.New("agentsmd: file exceeds size limit")
 
 // Chain returns the instruction files that apply at path: opts.Extra
 // in order, then, in path's directory and each of its ancestors up to
-// opts.Root, the first file of opts.Names that exists, farthest first
-// and nearest last, within opts.Budget. A file found and not
-// included, because a preferred name shadows it or the budget is
-// spent, is in [Result.Omitted]; only a file that would be included
-// is read, and only such a file over opts.MaxBytes is an error. path
+// opts.Root, the first of opts.Names that the directory lists,
+// farthest first and nearest last, within opts.Budget. A file found
+// and not included, because a preferred name shadows it or the budget
+// is spent, is in [Result.Omitted]; only a file that would be
+// included is read, and only such a file over opts.MaxBytes is an
+// error. A directory that cannot be listed is an error. path
 // may be a directory, an existing file, or a file about to be
 // created, whose directory is then the start. With opts.FS set, path
 // is a name in it and the chain's files are named as they are in it.
@@ -165,6 +172,11 @@ func Chain(path string, opts Options) (Result, error) {
 	names := opts.Names
 	if len(names) == 0 {
 		names = DefaultNames
+	}
+	for _, name := range names {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/"+string(filepath.Separator)) {
+			return Result{}, fmt.Errorf("agentsmd: %q is not a valid name: a name is one path element", name)
+		}
 	}
 	maxBytes := opts.MaxBytes
 	if maxBytes <= 0 {
@@ -218,8 +230,15 @@ func Chain(path string, opts Options) (Result, error) {
 		}
 	}
 	for i := len(dirs) - 1; i >= 0; i-- {
+		listed, err := tree.list(dirs[i])
+		if err != nil {
+			return Result{}, err
+		}
 		found := ""
 		for _, name := range names {
+			if !listed[name] {
+				continue
+			}
 			p, err := tree.join(dirs[i], name)
 			if err != nil {
 				return Result{}, err
@@ -250,6 +269,11 @@ type tree struct {
 	// dirs returns the directories of the chain, nearest first, from
 	// the path Chain was given up to root.
 	dirs func(path, root string) ([]string, error)
+	// list returns the names of dir's entries, so a name is found
+	// only as the directory spells it and never by a case-insensitive
+	// file system answering for it. A directory that does not exist
+	// lists nothing.
+	list func(dir string) (map[string]bool, error)
 	// join names the file called name in dir.
 	join func(dir, name string) (string, error)
 	// stat reports the file when it exists and is not a directory.
@@ -262,6 +286,7 @@ type tree struct {
 func osTree() tree {
 	return tree{
 		dirs: osDirs,
+		list: func(dir string) (map[string]bool, error) { return listed(os.ReadDir(dir)) },
 		join: func(dir, name string) (string, error) { return filepath.Join(dir, name), nil },
 		stat: stat,
 		read: os.ReadFile,
@@ -301,6 +326,7 @@ func osDirs(path, root string) ([]string, error) {
 func fsTree(fsys fs.FS) tree {
 	return tree{
 		dirs: func(name, root string) ([]string, error) { return fsDirs(fsys, name, root) },
+		list: func(dir string) (map[string]bool, error) { return listed(fs.ReadDir(fsys, dir)) },
 		join: func(dir, name string) (string, error) {
 			p := path.Join(dir, name)
 			if !fs.ValidPath(p) {
@@ -361,6 +387,25 @@ func startDir(path string) (string, error) {
 	default:
 		return "", fmt.Errorf("agentsmd: %w", err)
 	}
+}
+
+// listed returns the names of a directory's entries. A directory that
+// does not exist, such as that of a file about to be created in a
+// directory about to be made, has none; one that exists and cannot be
+// listed is an error, not an empty directory, since it may hold a file
+// the chain would include.
+func listed(entries []fs.DirEntry, err error) (map[string]bool, error) {
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("agentsmd: %w", err)
+	}
+	names := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		names[e.Name()] = true
+	}
+	return names, nil
 }
 
 // stat reports the file when it exists and is not a directory. A

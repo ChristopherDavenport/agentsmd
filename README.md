@@ -23,8 +23,9 @@ cfg.Instructions = agentsmd.Render(res.Files)
 ```
 
 `Chain` returns `Extra` first, then walks from the path's directory to
-`Root`, takes in each directory the first of `Names` that exists, and
-returns those files farthest first and nearest last, so that later
+`Root`, takes in each directory the first of `Names` that the
+directory lists under exactly that spelling, and returns those files
+farthest first and nearest last, so that later
 text refines earlier text. `Extra` comes first because a file outside
 the tree, such as the user's own in their home directory, is the
 farthest of the lot: Codex reads `~/.codex/AGENTS.md` before the
@@ -57,8 +58,9 @@ res, err := agentsmd.Chain("services/api", agentsmd.Options{
 ```
 
 The path, `Root` and the chain's directories are then names in the FS
-(`fs.ValidPath`, `"."` for its root), files are found with `fs.Stat`
-and read with `fs.ReadFile`, and `File.Path` and `Omitted.Path` are
+(`fs.ValidPath`, `"."` for its root), directories are listed with
+`fs.ReadDir`, files are stat'd with `fs.Stat` and read with
+`fs.ReadFile`, and `File.Path` and `Omitted.Path` are
 the names in the FS, which the product maps to what it shows before
 `Render`. The walk only asks the FS for names below `"."` and resolves
 no links itself, so an FS that confines, such as `os.Root.FS()`, keeps

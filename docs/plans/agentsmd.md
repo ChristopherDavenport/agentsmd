@@ -91,7 +91,13 @@ monorepo. `Names` is a preference order and yields at most one file
 per directory, as Codex reads `AGENTS.override.md` before `AGENTS.md`,
 so a developer can shadow a committed file without deleting it, and
 dax can let `CLAUDE.md` stand in where `AGENTS.md` is absent; the
-package knows no name specially. `Budget` caps the total, the way the
+package knows no name specially. A name is found by listing the
+directory and comparing each entry's name to it byte for byte, never by
+asking the file system for the name: a case-insensitive file system
+answers for `agents.md` when asked for `AGENTS.md`, so a repository's
+chain would differ between macOS and Linux with nothing reported
+(#4). A name is one path element, a directory of that name is not a
+file, and a directory that cannot be listed is an error. `Budget` caps the total, the way the
 reference's `project_doc_max_bytes` does: the first file that would
 exceed it, and everything after it, is left out and `Chain` returns
 what fits without error, so a large file deep in a tree degrades the
@@ -110,8 +116,9 @@ because its tools act in a container or a remote workspace: the
 repository's files are there, and only the product's own file in the
 user's home directory is on the host. With `FS` set, the path and
 `Root` are `fs.ValidPath` names in it, `"."` its root and the default
-`Root`; the walk goes up with `path.Dir`, finds files with `fs.Stat`
-and reads them with `fs.ReadFile`, and every path in the `Result` of
+`Root`; the walk goes up with `path.Dir`, lists each directory with
+`fs.ReadDir`, stats the names it finds with `fs.Stat` and reads them
+with `fs.ReadFile`, and every path in the `Result` of
 the chain is the name in the FS. A name is not a location the model
 can be shown, but the package does not know where the product mounts
 the FS, and a product that wants `/workspace/AGENTS.md` in the prompt
@@ -126,8 +133,10 @@ out of it, is `Chain`'s error. Only `fs.ErrNotExist` means no file.
 
 ## Invariants
 
-- `Chain` returns files farthest first and nearest last, at most one
-  per directory, then `Extra` in order.
+- `Chain` returns `Extra` in order, then files farthest first and
+  nearest last, at most one per directory.
+- A directory's file is the first of `Names` equal, byte for byte, to
+  an entry the directory lists, on every host.
 - A returned file is byte for byte what is on disk, or in `FS`;
   nothing is truncated, reflowed or summarised.
 - With `FS` set, every name `Chain` asks it for is `fs.ValidPath`;
