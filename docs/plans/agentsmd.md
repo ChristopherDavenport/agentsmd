@@ -45,22 +45,23 @@ skills module.
 ## API
 
 ```go
-// Chain returns the instruction files that apply at path: in path's
-// directory and each of its ancestors up to Root, the first file of
-// Names that exists, farthest first and nearest last, followed by
-// Extra in order, within Budget. With nearest last, later text
+// Chain returns the instruction files that apply at path: Extra in
+// order, then, in path's directory and each of its ancestors up to
+// Root, the first of Names that the directory lists, farthest first
+// and nearest last, within the budgets. With nearest last, later text
 // refines earlier text, which is how the convention's "closest file
 // takes precedence" reads when a product includes every file, as pi
 // and Claude Code do. A file found and not included is reported.
 func Chain(path string, opts Options) (Result, error)
 
 type Options struct {
-    FS       fs.FS    // where the walk reads; nil: the OS file system
-    Names    []string // tried in order per directory, first found wins; default: AGENTS.md
-    Root     string   // stop after this directory; default: the filesystem root, "." with FS
-    Extra    []string // explicit OS paths included first, such as ~/.dax/AGENTS.md; missing ones are skipped
-    MaxBytes int64    // per file read; default 1 MiB, a file that reads larger is an error
-    Budget   int64    // total; the first file that would exceed it ends the chain, without error; default: none
+    FS             fs.FS    // where the walk reads; nil: the OS file system
+    Names          []string // tried in order per directory, first listed wins; default: AGENTS.md
+    Root           string   // stop after this directory; default: the filesystem root, "." with FS
+    Extra          []string // explicit OS paths included first, such as ~/.dax/AGENTS.md; missing ones are skipped
+    MaxBytes       int64    // per file read; default 1 MiB, a file that reads larger is an error
+    Budget         int64    // total read; the first file that would exceed it ends the chain, without error; default: none
+    RenderedBudget int64    // the same, over Render's output; default: none
 }
 
 type Result struct {
@@ -105,19 +106,25 @@ left out and `Chain` returns what fits without error, so a large file
 deep in a tree degrades the prompt rather than failing the run. No file
 is cut short, because a half instruction file is a worse instruction
 than none; `MaxBytes` stays a per-file error for a file that would be
-included and could never fit. Both bounds are charged on the bytes a
-file reads, not the size its stat reported: an `FS` that expands
-imports, or a file that grows between the stat and the read, reads more
-than it stats, and a bound decided on the stat would be exceeded with
-nothing reported (#11). The stat decides only whether to read a file;
-the read goes no further than one byte past `MaxBytes`, a file that
-reads larger is an error, and one that reads past the budget left is
-omitted with the size it read and ends the chain. Neither omission is
-silent: `Result.Omitted` names every file `Chain` found and left out,
-with its size and why, so a product can tell the user that a rule file
-was shadowed or did not fit, and the session can record what the model
-was not given as well as what it was. A shadowed file, or one whose stat
-is over the budget left, is stat'd for its size and never read.
+included and could never fit. `RenderedBudget` caps `Render`'s output
+instead of the files, so a product that bounds its prompt sets the
+number the model pays: the files plus the `project_context` element and
+one `project_instructions` element per file, which a product could only
+learn by rendering and chaining a second time (#5). It is spent in the
+same order on the same reads, and with both set the first file over
+either ends the chain. All the bounds are charged on the bytes a file
+reads, not the size its stat reported: an `FS` that expands imports, or
+a file that grows between the stat and the read, reads more than it
+stats, and a bound decided on the stat would be exceeded with nothing
+reported (#11). The stat decides only whether to read a file; the read
+goes no further than one byte past `MaxBytes`, a file that reads larger
+is an error, and one that reads past the budget left is omitted with the
+size it read and ends the chain. Neither omission is silent:
+`Result.Omitted` names every file `Chain` found and left out, with its
+size and why, so a product can tell the user that a rule file was
+shadowed or did not fit, and the session can record what the model was
+not given as well as what it was. A shadowed file, or one whose stat is
+over the budget left, is stat'd for its size and never read.
 
 `Options.FS` is for a product whose project has no OS path on the host,
 because its tools act in a container or a remote workspace: the
@@ -131,12 +138,16 @@ in the FS. A name is not a location the model can be shown, but the
 package does not know where the product mounts the FS, and a product
 that wants `/workspace/AGENTS.md` in the prompt rewrites `File.Path`
 before `Render` in one loop; a `Location` option would only move that
-loop here. `Extra` stays OS paths, because the file it exists for is the
-user's, not the project's; an FS-backed `Extra` waits for a product that
-needs one. The walk never builds a name outside the FS and never
-resolves a link: confinement is the FS's, and an error the FS gives,
-such as `os.Root`'s refusal of a link out of it, is `Chain`'s error.
-Only `fs.ErrNotExist` means no file.
+loop here. That loop changes the rendered size, since the path is in
+each element, so `RenderedBudget` counts paths as `Chain` returns them
+and a product that rewrites them bounds the rewritten rendering itself
+(#5); the option stays out, as no product rewrites today. `Extra` stays
+OS paths, because the file it exists for is the user's, not the
+project's; an FS-backed `Extra` waits for a product that needs one. The
+walk never builds a name outside the FS and never resolves a link:
+confinement is the FS's, and an error the FS gives, such as `os.Root`'s
+refusal of a link out of it, is `Chain`'s error. Only `fs.ErrNotExist`
+means no file.
 
 
 ## Invariants

@@ -32,7 +32,9 @@ their home directory, is the farthest of the lot: Codex reads
 the repository's nearest file still has the last word. `Budget` caps the
 total and is spent in that same order: the first file that would exceed
 it ends the chain, nothing is cut short, and running out is not an
-error. `Budget` and `MaxBytes` count the bytes a file reads, not the
+error. `RenderedBudget` caps `Render`'s output the same way, wrapper and
+paths included, for a product that bounds its prompt rather than the
+files. `Budget` and `MaxBytes` count the bytes a file reads, not the
 size its stat reported, so an `FS` that expands a file as it reads it is
 held to them too. Every file found and left out, shadowed by a preferred
 name or over budget, is in `Result.Omitted` with its size and its path,
@@ -62,11 +64,14 @@ The path, `Root` and the chain's directories are then names in the FS
 (`fs.ValidPath`, `"."` for its root), directories are listed with
 `fs.ReadDir`, files are stat'd with `fs.Stat` and read through `Open`,
 and `File.Path` and `Omitted.Path` are the names in the FS, which the
-product maps to what it shows before `Render`. The walk only asks the FS
-for names below `"."` and resolves no links itself, so an FS that
-confines, such as `os.Root.FS()`, keeps its confinement: a link it
-refuses is `Chain`'s error, not a missing file. `Extra` stays OS paths,
-since the user's own file is not part of the project.
+product maps to what it shows before `Render`. `RenderedBudget` counts
+the paths as `Chain` returns them, so a product that rewrites them
+changes the rendered size and bounds the rewritten rendering itself. The
+walk only asks the FS for names below `"."` and resolves no links
+itself, so an FS that confines, such as `os.Root.FS()`, keeps its
+confinement: a link it refuses is `Chain`'s error, not a missing file.
+`Extra` stays OS paths, since the user's own file is not part of the
+project.
 
 The package does not expand imports inside files, know any file name
 specially, or fetch anything.

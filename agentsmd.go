@@ -99,6 +99,21 @@ type Options struct {
 	// size does not fit is left out unread, and one that reads more
 	// than fits is left out with the size it read.
 	Budget int64
+	// RenderedBudget bounds the bytes of [Render]'s output rather than
+	// of the files, so a product bounding its prompt sets the number
+	// the model pays: the files, the project_context element around
+	// them and one project_instructions element per file, with its
+	// path. It is spent as Budget is, in the same order, on the bytes
+	// read, and the first file that would take the rendering over it
+	// ends the chain. Zero means no rendered budget; Budget, when also
+	// set, still bounds the files, and the first file over either ends
+	// the chain.
+	//
+	// The paths counted are the ones Chain returns. A product that
+	// rewrites [File.Path] before Render, such as to show a name in
+	// Options.FS as a workspace path, changes the rendered size, and
+	// must bound the rewritten rendering itself.
+	RenderedBudget int64
 }
 
 // File is one instruction file, read verbatim.
@@ -106,7 +121,9 @@ type File struct {
 	// Path is absolute, or, for a file of the chain read through
 	// [Options.FS], its name in that FS. A product that shows the
 	// file somewhere else maps the name to what it shows, such as a
-	// workspace's root joined with it, before [Render].
+	// workspace's root joined with it, before [Render]; that changes
+	// the rendered size, which [Options.RenderedBudget] counts with the
+	// path as Chain returned it.
 	Path string
 	// Content is the file's bytes as a string.
 	Content string
@@ -149,7 +166,8 @@ type Reason int
 
 const (
 	// OverBudget: the file, or one before it, would have taken the
-	// total over Options.Budget, and the chain ends at the first such
+	// total over Options.Budget, or the rendering over
+	// Options.RenderedBudget, and the chain ends at the first such
 	// file.
 	OverBudget Reason = iota
 	// Shadowed: an earlier name in Options.Names exists in the same
@@ -174,7 +192,8 @@ var ErrTooLarge = errors.New("agentsmd: file exceeds size limit")
 // Chain returns the instruction files that apply at path: opts.Extra
 // in order, then, in path's directory and each of its ancestors up to
 // opts.Root, the first of opts.Names that the directory lists,
-// farthest first and nearest last, within opts.Budget. A file found
+// farthest first and nearest last, within opts.Budget and
+// opts.RenderedBudget. A file found
 // and not included, because a preferred name shadows it or the budget
 // is spent, is in [Result.Omitted]. A file is read only when its
 // reported size fits the budget, and the bounds apply to the bytes it
@@ -206,8 +225,17 @@ func Chain(path string, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	var res Result
-	var total int64
+	var total, rendered int64
 	spent := false
+	// fits reports whether a file of size bytes at path fits both
+	// budgets beside the files taken. newline is whether Render adds
+	// one after its content, which is known only once it is read.
+	fits := func(path string, size int64, newline bool) bool {
+		if opts.Budget > 0 && total+size > opts.Budget {
+			return false
+		}
+		return opts.RenderedBudget <= 0 || rendered+renderedCost(len(res.Files) == 0, path, size, newline) <= opts.RenderedBudget
+	}
 	// over records the file at path as omitted over budget, and the
 	// chain as spent.
 	over := func(path string, size int64) {
@@ -219,7 +247,9 @@ func Chain(path string, opts Options) (Result, error) {
 	// does not fit. The reported size decides whether to read it; the
 	// bytes read decide the rest.
 	consider := func(path string, size int64, open func(string) (io.ReadCloser, error)) error {
-		if spent || (opts.Budget > 0 && total+size > opts.Budget) {
+		// Before the read, the newline Render may add is not counted,
+		// so a file is never left unread that would have fit.
+		if spent || !fits(path, size, false) {
 			over(path, size)
 			return nil
 		}
@@ -231,11 +261,14 @@ func Chain(path string, opts Options) (Result, error) {
 		if n > maxBytes {
 			return fmt.Errorf("%w: %s is more than %d bytes", ErrTooLarge, path, maxBytes)
 		}
-		if opts.Budget > 0 && total+n > opts.Budget {
+		content := string(data)
+		newline := !strings.HasSuffix(content, "\n")
+		if !fits(path, n, newline) {
 			over(path, n)
 			return nil
 		}
-		res.Files = append(res.Files, File{Path: path, Content: string(data)})
+		rendered += renderedCost(len(res.Files) == 0, path, n, newline)
+		res.Files = append(res.Files, File{Path: path, Content: content})
 		total += n
 		return nil
 	}
@@ -497,19 +530,44 @@ func Render(files []File) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("<project_context>\n")
+	b.WriteString(contextOpen)
 	for _, f := range files {
-		b.WriteString(`<project_instructions path="`)
+		b.WriteString(fileOpen)
 		b.WriteString(escapeAttr(f.Path))
-		b.WriteString("\">\n")
+		b.WriteString(fileOpenEnd)
 		b.WriteString(f.Content)
 		if !strings.HasSuffix(f.Content, "\n") {
 			b.WriteString("\n")
 		}
-		b.WriteString("</project_instructions>\n")
+		b.WriteString(fileClose)
 	}
-	b.WriteString("</project_context>")
+	b.WriteString(contextClose)
 	return b.String()
+}
+
+// The pieces [Render] writes, which [renderedCost] counts.
+const (
+	contextOpen  = "<project_context>\n"
+	contextClose = "</project_context>"
+	fileOpen     = `<project_instructions path="`
+	fileOpenEnd  = "\">\n"
+	fileClose    = "</project_instructions>\n"
+)
+
+// renderedCost is the bytes [Render] adds to its output for one more
+// file of size bytes at path: its element, its content, and the
+// newline Render writes after content that does not end in one; and,
+// for the first file, the project_context element around them all,
+// since no files render as nothing.
+func renderedCost(first bool, path string, size int64, newline bool) int64 {
+	n := int64(len(fileOpen)+len(escapeAttr(path))+len(fileOpenEnd)+len(fileClose)) + size
+	if newline {
+		n++
+	}
+	if first {
+		n += int64(len(contextOpen) + len(contextClose))
+	}
+	return n
 }
 
 var escapeAttr = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;").Replace
