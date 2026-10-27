@@ -5,6 +5,33 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Changed: a directory's file is the first of `Options.Names` equal,
+  byte for byte, to the name of an entry the directory lists. `Chain`
+  used to ask the file system for each name, so on a case-insensitive
+  file system, macOS's by default, an `agents.md` answered for
+  `AGENTS.md` and was read, where Linux left it out. It is now left
+  out on every host; a product that wants it lists `agents.md` in
+  `Names`. A name that is not one path element is an error, and so is
+  a directory of the chain that exists and cannot be listed. An
+  `Options.FS` must now support listing directories (#4).
+- Fixed: `MaxBytes` and `Budget` apply to the bytes a file reads, not
+  the size its stat reported, so an `Options.FS` that expands imports,
+  or a file that grows between the stat and the read, no longer takes
+  the chain past either with nothing reported. A file that reads over
+  `MaxBytes` is `ErrTooLarge`; one that reads past the budget left is
+  omitted as over budget with the size it read and ends the chain.
+  The read stops one byte past `MaxBytes`. A file whose stat is over
+  `MaxBytes` but reads within it is now included. Files are read
+  through the FS's `Open`, not `fs.ReadFile` (#11).
+- Added: `Options.RenderedBudget`, a budget over `Render`'s output,
+  wrapper and paths included, so a product bounding its prompt sets
+  the number the model pays in one `Chain`. It is spent like `Budget`,
+  and with both set the first file over either ends the chain. Paths
+  count as `Chain` returns them: a product that rewrites `File.Path`
+  before `Render` changes the rendered size (#5).
+
 ## v0.0.3 - 2026-10-09
 
 - Added: `Options.FS`. When set, `Chain` walks and reads the chain
