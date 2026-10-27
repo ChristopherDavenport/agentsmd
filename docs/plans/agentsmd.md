@@ -45,22 +45,23 @@ skills module.
 ## API
 
 ```go
-// Chain returns the instruction files that apply at path: in path's
-// directory and each of its ancestors up to Root, the first file of
-// Names that exists, farthest first and nearest last, followed by
-// Extra in order, within Budget. With nearest last, later text
+// Chain returns the instruction files that apply at path: Extra in
+// order, then, in path's directory and each of its ancestors up to
+// Root, the first of Names that the directory lists, farthest first
+// and nearest last, within the budgets. With nearest last, later text
 // refines earlier text, which is how the convention's "closest file
 // takes precedence" reads when a product includes every file, as pi
 // and Claude Code do. A file found and not included is reported.
 func Chain(path string, opts Options) (Result, error)
 
 type Options struct {
-    FS       fs.FS    // where the walk reads; nil: the OS file system
-    Names    []string // tried in order per directory, first found wins; default: AGENTS.md
-    Root     string   // stop after this directory; default: the filesystem root, "." with FS
-    Extra    []string // explicit OS paths included first, such as ~/.dax/AGENTS.md; missing ones are skipped
-    MaxBytes int64    // per file that is included; default 1 MiB, a larger one is an error
-    Budget   int64    // total; the first file that would exceed it ends the chain, without error; default: none
+    FS             fs.FS    // where the walk reads; nil: the OS file system
+    Names          []string // tried in order per directory, first listed wins; default: AGENTS.md
+    Root           string   // stop after this directory; default: the filesystem root, "." with FS
+    Extra          []string // explicit OS paths included first, such as ~/.dax/AGENTS.md; missing ones are skipped
+    MaxBytes       int64    // per file read; default 1 MiB, a file that reads larger is an error
+    Budget         int64    // total read; the first file that would exceed it ends the chain, without error; default: none
+    RenderedBudget int64    // the same, over Render's output; default: none
 }
 
 type Result struct {
@@ -87,55 +88,84 @@ func Render(files []File) string
 
 `Chain` takes a path rather than a cwd so one call serves both the
 session's working directory and the file a tool is about to touch in a
-monorepo. `Names` is a preference order and yields at most one file
-per directory, as Codex reads `AGENTS.override.md` before `AGENTS.md`,
-so a developer can shadow a committed file without deleting it, and
-dax can let `CLAUDE.md` stand in where `AGENTS.md` is absent; the
-package knows no name specially. `Budget` caps the total, the way the
-reference's `project_doc_max_bytes` does: the first file that would
-exceed it, and everything after it, is left out and `Chain` returns
-what fits without error, so a large file deep in a tree degrades the
-prompt rather than failing the run. No file is cut short, because a
-half instruction file is a worse instruction than none; `MaxBytes`
-stays a per-file error for a file that would be included and could
-never fit. Neither omission is silent: `Result.Omitted` names every
-file `Chain` found and left out, with its size and why, so a product
-can tell the user that a rule file was shadowed or did not fit, and
-the session can record what the model was not given as well as what
-it was. Only a file that is included is read; a shadowed or
-over-budget file is stat'd for its size and left alone.
+monorepo. `Names` is a preference order and yields at most one file per
+directory, as Codex reads `AGENTS.override.md` before `AGENTS.md`, so a
+developer can shadow a committed file without deleting it, and dax can
+let `CLAUDE.md` stand in where `AGENTS.md` is absent; the package knows
+no name specially. A name is found by listing the directory and
+comparing each entry's name to it byte for byte, never by asking the
+file system for the name: a case-insensitive file system answers for
+`agents.md` when asked for `AGENTS.md`, so a repository's chain would
+differ between macOS and Linux with nothing reported (#4). A name is one
+path element, a directory of that name is not a file, and a directory
+that cannot be listed is an error.
+
+`Budget` caps the total, the way the reference's `project_doc_max_bytes`
+does: the first file that would exceed it, and everything after it, is
+left out and `Chain` returns what fits without error, so a large file
+deep in a tree degrades the prompt rather than failing the run. No file
+is cut short, because a half instruction file is a worse instruction
+than none; `MaxBytes` stays a per-file error for a file that would be
+included and could never fit. `RenderedBudget` caps `Render`'s output
+instead of the files, so a product that bounds its prompt sets the
+number the model pays: the files plus the `project_context` element and
+one `project_instructions` element per file, which a product could only
+learn by rendering and chaining a second time (#5). It is spent in the
+same order on the same reads, and with both set the first file over
+either ends the chain. All the bounds are charged on the bytes a file
+reads, not the size its stat reported: an `FS` that expands imports, or
+a file that grows between the stat and the read, reads more than it
+stats, and a bound decided on the stat would be exceeded with nothing
+reported (#11). The stat decides only whether to read a file; the read
+goes no further than one byte past `MaxBytes`, a file that reads larger
+is an error, and one that reads past the budget left is omitted with the
+size it read and ends the chain. Neither omission is silent:
+`Result.Omitted` names every file `Chain` found and left out, with its
+size and why, so a product can tell the user that a rule file was
+shadowed or did not fit, and the session can record what the model was
+not given as well as what it was. A shadowed file, or one whose stat is
+over the budget left, is stat'd for its size and never read.
 
 `Options.FS` is for a product whose project has no OS path on the host,
 because its tools act in a container or a remote workspace: the
 repository's files are there, and only the product's own file in the
-user's home directory is on the host. With `FS` set, the path and
-`Root` are `fs.ValidPath` names in it, `"."` its root and the default
-`Root`; the walk goes up with `path.Dir`, finds files with `fs.Stat`
-and reads them with `fs.ReadFile`, and every path in the `Result` of
-the chain is the name in the FS. A name is not a location the model
-can be shown, but the package does not know where the product mounts
-the FS, and a product that wants `/workspace/AGENTS.md` in the prompt
-rewrites `File.Path` before `Render` in one loop; a `Location` option
-would only move that loop here. `Extra` stays OS paths, because the
-file it exists for is the user's, not the project's; an FS-backed
-`Extra` waits for a product that needs one. The walk never builds a
-name outside the FS and never resolves a link: confinement is the
-FS's, and an error the FS gives, such as `os.Root`'s refusal of a link
-out of it, is `Chain`'s error. Only `fs.ErrNotExist` means no file.
+user's home directory is on the host. With `FS` set, the path and `Root`
+are `fs.ValidPath` names in it, `"."` its root and the default `Root`;
+the walk goes up with `path.Dir`, lists each directory with
+`fs.ReadDir`, stats the names it finds with `fs.Stat` and reads them
+through `Open`, and every path in the `Result` of the chain is the name
+in the FS. A name is not a location the model can be shown, but the
+package does not know where the product mounts the FS, and a product
+that wants `/workspace/AGENTS.md` in the prompt rewrites `File.Path`
+before `Render` in one loop; a `Location` option would only move that
+loop here. That loop changes the rendered size, since the path is in
+each element, so `RenderedBudget` counts paths as `Chain` returns them
+and a product that rewrites them bounds the rewritten rendering itself
+(#5); the option stays out, as no product rewrites today. `Extra` stays
+OS paths, because the file it exists for is the user's, not the
+project's; an FS-backed `Extra` waits for a product that needs one. The
+walk never builds a name outside the FS and never resolves a link:
+confinement is the FS's, and an error the FS gives, such as `os.Root`'s
+refusal of a link out of it, is `Chain`'s error. Only `fs.ErrNotExist`
+means no file.
 
 
 ## Invariants
 
-- `Chain` returns files farthest first and nearest last, at most one
-  per directory, then `Extra` in order.
+- `Chain` returns `Extra` in order, then files farthest first and
+  nearest last, at most one per directory.
+- A directory's file is the first of `Names` equal, byte for byte, to
+  an entry the directory lists, on every host.
 - A returned file is byte for byte what is on disk, or in `FS`;
   nothing is truncated, reflowed or summarised.
 - With `FS` set, every name `Chain` asks it for is `fs.ValidPath`;
   with `FS` nil, behaviour is as before `FS` existed.
 - Every file `Chain` found and did not return is in `Result.Omitted`
-  with the reason; only a returned file is read.
-- A breached `Budget` is never an error; a breached `MaxBytes` on a
-  file that would be returned always is.
+  with the reason. A file is read only when its stat size would be
+  included; a file read and found over a bound is reported, not
+  returned.
+- The bounds apply to the bytes read. A breached `Budget` is never an
+  error; a file that reads over `MaxBytes` always is.
 - The package imports the standard library only.
 
 ## Testing
