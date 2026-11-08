@@ -15,9 +15,15 @@ versions may break the API.
   place in `Result.Files` and is also in `Result.Omitted` with the new
   reason `Truncated` and the `N` bytes cut off as its `Size`; every
   later file is `OverBudget`. A file the marker alone does not fit is
-  left out whole, as before. The file to cut is read whatever its stat
-  says, so it is held to `MaxBytes`, which stays an error. Off by
-  default; without it nothing changes (#13).
+  left out whole, as before. A file whose stat does not fit is read no
+  further than one byte past the room the budgets leave, or past
+  `MaxBytes` when that is less, so an endless file is cut too; when the
+  read stops before the file ends, `N` is the stat's size less the
+  bytes kept. `Truncate` turns no omission into an error: such a file
+  that reads over `MaxBytes` with room to spare is left out as
+  `OverBudget`, as without it, and `MaxBytes` holds as before for a
+  file whose stat fits. Off by default; without it nothing changes
+  (#13).
 
 ## v0.0.4 - 2026-10-27
 

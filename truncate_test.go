@@ -2,6 +2,7 @@ package agentsmd
 
 import (
 	"errors"
+	"io/fs"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,10 +24,11 @@ func TestChainTruncate(t *testing.T) {
 			"AGENTS.md":          {Data: []byte(root)},
 			"sub/AGENTS.md":      {Data: []byte(sub)},
 			"sub/deep/AGENTS.md": {Data: []byte(deep)},
-			"big/AGENTS.md":      {Data: []byte(strings.Repeat("x\n", 20))},
-			"lies/AGENTS.md":     {Data: []byte(sub)}, // stats as 1000
+			"big/AGENTS.md":      {Data: []byte(strings.Repeat("x\n", 200))},
+			"small/AGENTS.md":    {Data: []byte(strings.Repeat("x\n", 200))}, // stats as 10
+			"lies/AGENTS.md":     {Data: []byte(sub)},                        // stats as 1000
 		},
-		sizes: map[string]int64{"lies/AGENTS.md": 1000},
+		sizes: map[string]int64{"lies/AGENTS.md": 1000, "small/AGENTS.md": 10},
 	}
 	mark := func(left int) string { return marker("sub/AGENTS.md", int64(left)) }
 	m200 := int64(len(mark(200))) // the marker for the 200 bytes after "one\ntwo\n"
@@ -83,18 +85,19 @@ func TestChainTruncate(t *testing.T) {
 		},
 		{
 			// It stats far over the budget, which without Truncate
-			// leaves it out unread; under Truncate it is read and cut on
-			// the bytes it reads.
-			name:    "a file that stats over the budget is read and cut",
+			// leaves it out unread; under Truncate it is read only as
+			// far as could fit, so the bytes left out are counted from
+			// its stat: 1000 less the 8 kept.
+			name:    "a file that stats over the budget is cut, counted from its stat",
 			path:    "lies",
-			opts:    Options{Budget: 5 + 8 + int64(len(marker("lies/AGENTS.md", 200))), Truncate: true},
-			files:   []File{{"AGENTS.md", root}, {"lies/AGENTS.md", "one\ntwo\n" + marker("lies/AGENTS.md", 200)}},
-			omitted: []Omitted{{Path: "lies/AGENTS.md", Size: 200, Reason: Truncated}},
+			opts:    Options{Budget: 5 + 8 + int64(len(marker("lies/AGENTS.md", 992))), Truncate: true},
+			files:   []File{{"AGENTS.md", root}, {"lies/AGENTS.md", "one\ntwo\n" + marker("lies/AGENTS.md", 992)}},
+			omitted: []Omitted{{Path: "lies/AGENTS.md", Size: 992, Reason: Truncated}},
 		},
 		{
 			name:    "off: a file that stats over the budget is left out unread",
 			path:    "lies",
-			opts:    Options{Budget: 5 + 8 + int64(len(marker("lies/AGENTS.md", 200)))},
+			opts:    Options{Budget: 5 + 8 + int64(len(marker("lies/AGENTS.md", 992)))},
 			files:   []File{{"AGENTS.md", root}},
 			omitted: []Omitted{{Path: "lies/AGENTS.md", Size: 1000, Reason: OverBudget}},
 		},
@@ -103,15 +106,35 @@ func TestChainTruncate(t *testing.T) {
 			// is not checked.
 			name:    "off: a file over MaxBytes and the budget is left out",
 			path:    "big",
-			opts:    Options{Budget: 10, MaxBytes: 39},
+			opts:    Options{Budget: 105, MaxBytes: 300},
 			files:   []File{{"AGENTS.md", root}},
-			omitted: []Omitted{{Path: "big/AGENTS.md", Size: 40, Reason: OverBudget}},
+			omitted: []Omitted{{Path: "big/AGENTS.md", Size: 400, Reason: OverBudget}},
 		},
 		{
-			// The file to cut is read, so it is held to MaxBytes.
-			name: "MaxBytes stays an error",
-			path: "big",
-			opts: Options{Budget: 10, MaxBytes: 39, Truncate: true},
+			// Only the 101 bytes that could matter are read, short of
+			// MaxBytes, so it is cut, not an error: 36 bytes and a
+			// 64-byte marker fit the 100 left.
+			name:    "a file over MaxBytes and the budget is cut, not an error",
+			path:    "big",
+			opts:    Options{Budget: 105, MaxBytes: 300, Truncate: true},
+			files:   []File{{"AGENTS.md", root}, {"big/AGENTS.md", strings.Repeat("x\n", 18) + marker("big/AGENTS.md", 364)}},
+			omitted: []Omitted{{Path: "big/AGENTS.md", Size: 364, Reason: Truncated}},
+		},
+		{
+			// MaxBytes is reached before the room is, so the file is left
+			// out as it would be without Truncate, not an error.
+			name:    "a file over MaxBytes with room to spare is left out, not an error",
+			path:    "big",
+			opts:    Options{Budget: 305, MaxBytes: 39, Truncate: true},
+			files:   []File{{"AGENTS.md", root}},
+			omitted: []Omitted{{Path: "big/AGENTS.md", Size: 400, Reason: OverBudget}},
+		},
+		{
+			// It stats within the budget, so it is read whole and held
+			// to MaxBytes, with Truncate as without.
+			name: "a file whose stat fits and reads over MaxBytes is an error",
+			path: "small",
+			opts: Options{Budget: 1000, MaxBytes: 39, Truncate: true},
 			err:  ErrTooLarge,
 		},
 	}
@@ -237,6 +260,115 @@ func TestChainTruncateSweep(t *testing.T) {
 			}
 			if cuts == 0 {
 				t.Fatal("no budget cut a file")
+			}
+		})
+	}
+}
+
+// lineFile is "line\n" over and over, without end.
+type lineFile struct {
+	fs.File
+	off int
+}
+
+func (l *lineFile) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = "line\n"[l.off%5]
+		l.off++
+	}
+	return len(p), nil
+}
+
+// countingFile counts the bytes read from it.
+type countingFile struct {
+	fs.File
+	n *int64
+}
+
+func (c countingFile) Read(p []byte) (int, error) {
+	n, err := c.File.Read(p)
+	*c.n += int64(n)
+	return n, err
+}
+
+// endlessCounted is an FS whose AGENTS.md never ends, stats as size,
+// and counts the bytes read from it into read.
+type endlessCounted struct {
+	fstest.MapFS
+	size int64
+	read *int64
+}
+
+func (e endlessCounted) Stat(name string) (fs.FileInfo, error) {
+	info, err := e.MapFS.Stat(name)
+	if err == nil && name == "AGENTS.md" {
+		return sizedInfo{info, e.size}, nil
+	}
+	return info, err
+}
+
+func (e endlessCounted) Open(name string) (fs.File, error) {
+	f, err := e.MapFS.Open(name)
+	if err != nil || name != "AGENTS.md" {
+		return f, err
+	}
+	return countingFile{&lineFile{File: f}, e.read}, nil
+}
+
+// TestChainTruncateEndless: under Truncate a file whose stat is over
+// the budget is read no further than one byte past the room left,
+// under either budget, so a file that never ends is cut and Chain
+// returns without error, counting the bytes left out from the stat.
+// Without Truncate it is left out unread.
+func TestChainTruncateEndless(t *testing.T) {
+	const size = 1 << 40
+	element := renderedCost(true, "AGENTS.md", 0, false)
+	tests := []struct {
+		name string
+		opts Options
+		room int64
+	}{
+		{name: "Budget", opts: Options{Budget: 200}, room: 200},
+		{name: "RenderedBudget", opts: Options{RenderedBudget: element + 200}, room: 200},
+		{name: "both, Budget tighter", opts: Options{Budget: 150, RenderedBudget: element + 200}, room: 150},
+		{name: "both, RenderedBudget tighter", opts: Options{Budget: 300, RenderedBudget: element + 120}, room: 120},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var read int64
+			tt.opts.FS = endlessCounted{fstest.MapFS{"AGENTS.md": {Data: []byte("x")}}, size, &read}
+			tt.opts.MaxBytes = 1 << 10
+
+			off, err := Chain(".", tt.opts)
+			if err != nil {
+				t.Fatalf("without Truncate: %v", err)
+			}
+			if want := []Omitted{{Path: "AGENTS.md", Size: size, Reason: OverBudget}}; len(off.Files) != 0 || !reflect.DeepEqual(off.Omitted, want) || read != 0 {
+				t.Fatalf("without Truncate: %+v, %d bytes read; want it left out unread", off, read)
+			}
+
+			tt.opts.Truncate = true
+			res, err := Chain(".", tt.opts)
+			if err != nil {
+				t.Fatalf("Chain() error = %v", err)
+			}
+			if read > tt.room+1 {
+				t.Errorf("read %d bytes, want no more than %d", read, tt.room+1)
+			}
+			if len(res.Files) != 1 || len(res.Omitted) != 1 || res.Omitted[0].Reason != Truncated {
+				t.Fatalf("Chain() = %+v, want AGENTS.md cut", res)
+			}
+			kept := size - res.Omitted[0].Size
+			want := strings.Repeat("line\n", int(kept/5)) + marker("AGENTS.md", size-kept)
+			if kept <= 0 || kept%5 != 0 || res.Files[0].Content != want {
+				t.Errorf("Content = %q, Omitted = %+v; want whole lines and the marker", res.Files[0].Content, res.Omitted)
+			}
+			// The cut is the longest that fits: one more line does not.
+			if got := int64(len(res.Files[0].Content)); got > tt.room || got+5 <= tt.room {
+				t.Errorf("%d bytes with the marker, room %d: want the longest cut that fits", got, tt.room)
+			}
+			if got := int64(len(Render(res.Files))); tt.opts.RenderedBudget > 0 && got > tt.opts.RenderedBudget {
+				t.Errorf("rendering %d bytes, over %d", got, tt.opts.RenderedBudget)
 			}
 		})
 	}

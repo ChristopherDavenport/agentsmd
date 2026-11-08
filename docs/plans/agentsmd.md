@@ -132,22 +132,34 @@ over the budget left, is stat'd for its size and never read.
 would rather keep the first part of its nearest file than lose it all:
 one byte over the budget otherwise drops the most specific file of the
 chain, and Codex's `project_doc_max_bytes` truncates (#13). Under it,
-the first file that does not fit is read whatever its stat says and cut
-at the last line boundary where it fits with a marker line after it,
+the first file that does not fit is cut at the last line boundary where
+it fits with a marker line after it,
 `[agentsmd: N bytes of PATH left out over the budget]`, so the model is
 told that text is missing and how much. The cut is at a line, not a
-heading: a cut at a line never splits a word or a code line, while
-the last heading that fits may lie far back or not exist at all. The marker counts against the budgets, so they bound the
-text the model reads; when not even the marker fits, the file is left
-out whole as `OverBudget`. The cut file keeps its place in the chain,
-since its first part is still the last text the model reads and
-refines what comes before it; it is also in `Result.Omitted` as `Truncated`, with the
-bytes cut off as its size, and every later file is `OverBudget`, as the
-chain ends there. `MaxBytes` does not share the mechanism: it stays an
-error, because it bounds a file that is wrong, not a prompt that is
-full, and the file to cut is read and held to it like any other. The
-option is off by default, so a product that wants whole files or
-nothing keeps them.
+heading: a cut at a line never splits a word or a code line, while the
+last heading that fits may lie far back or not exist at all. The marker
+counts against the budgets, so they bound the text the model reads;
+when not even the marker fits, the file is left out whole as
+`OverBudget`. The cut file keeps its place in the chain, since its first
+part is still the last text the model reads and refines what comes
+before it; it is also in `Result.Omitted` as `Truncated`, with the bytes
+cut off as its size, and every later file is `OverBudget`, as the chain
+ends there.
+
+The cut needs only the prefix that fits, so a file whose stat does not
+fit is read no further than one byte past the room the budgets leave,
+or past `MaxBytes` when that is less. An endless file is then cut rather
+than read to `MaxBytes`, and when the read stops before the file ends,
+`N` is the stat's size less the bytes kept: the stat is over the room,
+so it is at least the bytes read. `MaxBytes` does not share the
+mechanism, and `Truncate` turns no omission into an error: without it
+such a file is left out unread, and a product that turns it on must not
+find a huge or endless file fatal where it was omitted. So `MaxBytes`
+holds as before for a file whose stat fits, which is read whole and is
+an error if it reads over, and a file whose stat does not fit and that
+reads over `MaxBytes` before the room is reached is left out as
+`OverBudget`, as without `Truncate`. The option is off by default, so a
+product that wants whole files or nothing keeps them.
 
 `Options.FS` is for a product whose project has no OS path on the host,
 because its tools act in a container or a remote workspace: the
@@ -187,12 +199,14 @@ means no file.
 - With `FS` set, every name `Chain` asks it for is `fs.ValidPath`;
   with `FS` nil, behaviour is as before `FS` existed.
 - Every file `Chain` found and did not return whole is in
-  `Result.Omitted` with the reason. A file is read only when its stat
-  size would be included, or, under `Truncate`, when it is the first
-  over a budget; a file read and found over a bound is reported, and
+  `Result.Omitted` with the reason. A file is read whole only when its
+  stat size would be included; under `Truncate` the first whose stat
+  is over a budget is read no further than one byte past the room left
+  or `MaxBytes`. A file read and found over a bound is reported, and
   returned only as a cut under `Truncate`.
 - The bounds apply to the bytes read. A breached `Budget` is never an
-  error; a file that reads over `MaxBytes` always is.
+  error; a file whose stat fits and that reads over `MaxBytes` always
+  is. `Truncate` turns no omission into an error.
 - The package imports the standard library only.
 
 ## Testing
