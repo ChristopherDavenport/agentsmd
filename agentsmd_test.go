@@ -336,7 +336,7 @@ func TestErrTooLargeIsWrapped(t *testing.T) {
 }
 
 func TestReasonString(t *testing.T) {
-	for r, want := range map[Reason]string{OverBudget: "over budget", Shadowed: "shadowed", Reason(7): "reason(7)"} {
+	for r, want := range map[Reason]string{OverBudget: "over budget", Shadowed: "shadowed", Truncated: "truncated", Reason(7): "reason(7)"} {
 		if got := r.String(); got != want {
 			t.Errorf("Reason(%d).String() = %q, want %q", int(r), got, want)
 		}

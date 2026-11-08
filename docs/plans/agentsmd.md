@@ -19,9 +19,9 @@ skills module.
 
 - Discover AGENTS.md files from a directory to a root, one per
   directory by name preference, nearest last, as Codex reads them.
-- Bound what goes in without cutting a file short, and say what was
-  left out, so the product and the session know what the model was
-  not given as well as what it was.
+- Bound what goes in, without cutting a file short unless the product
+  asks for it, and say what was left out, so the product and the
+  session know what the model was not given as well as what it was.
 - Render the files as pi renders `<project_context>`.
 - Standard library only.
 
@@ -62,6 +62,7 @@ type Options struct {
     MaxBytes       int64    // per file read; default 1 MiB, a file that reads larger is an error
     Budget         int64    // total read; the first file that would exceed it ends the chain, without error; default: none
     RenderedBudget int64    // the same, over Render's output; default: none
+    Truncate       bool     // cut the first file over a budget at a line, with a marker, instead of leaving it out
 }
 
 type Result struct {
@@ -76,8 +77,8 @@ type File struct {
 
 type Omitted struct {
     Path   string // absolute, or the name in FS
-    Size   int64
-    Reason Reason // OverBudget or Shadowed
+    Size   int64  // the bytes left out: for Truncated, those cut off the end
+    Reason Reason // OverBudget, Shadowed or Truncated
     By     string // the file that stood in for it, for Shadowed
 }
 
@@ -103,9 +104,10 @@ that cannot be listed is an error.
 `Budget` caps the total, the way the reference's `project_doc_max_bytes`
 does: the first file that would exceed it, and everything after it, is
 left out and `Chain` returns what fits without error, so a large file
-deep in a tree degrades the prompt rather than failing the run. No file
-is cut short, because a half instruction file is a worse instruction
-than none; `MaxBytes` stays a per-file error for a file that would be
+deep in a tree degrades the prompt rather than failing the run. By
+default no file is cut short, because a half instruction file can be a
+worse instruction than none (`Truncate`, below, lets a product choose
+otherwise); `MaxBytes` stays a per-file error for a file that would be
 included and could never fit. `RenderedBudget` caps `Render`'s output
 instead of the files, so a product that bounds its prompt sets the
 number the model pays: the files plus the `project_context` element and
@@ -125,6 +127,27 @@ size and why, so a product can tell the user that a rule file was
 shadowed or did not fit, and the session can record what the model was
 not given as well as what it was. A shadowed file, or one whose stat is
 over the budget left, is stat'd for its size and never read.
+
+`Options.Truncate` is the exception to whole files, for a product that
+would rather keep the first part of its nearest file than lose it all:
+one byte over the budget otherwise drops the most specific file of the
+chain, and Codex's `project_doc_max_bytes` truncates (#13). Under it,
+the first file that does not fit is read whatever its stat says and cut
+at the last line boundary where it fits with a marker line after it,
+`[agentsmd: N bytes of PATH left out over the budget]`, so the model is
+told that text is missing and how much. The cut is at a line, not a
+heading: a cut at a line never splits a word or a code line, while
+the last heading that fits may lie far back or not exist at all. The marker counts against the budgets, so they bound the
+text the model reads; when not even the marker fits, the file is left
+out whole as `OverBudget`. The cut file keeps its place in the chain,
+since its first part is still the last text the model reads and
+refines what comes before it; it is also in `Result.Omitted` as `Truncated`, with the
+bytes cut off as its size, and every later file is `OverBudget`, as the
+chain ends there. `MaxBytes` does not share the mechanism: it stays an
+error, because it bounds a file that is wrong, not a prompt that is
+full, and the file to cut is read and held to it like any other. The
+option is off by default, so a product that wants whole files or
+nothing keeps them.
 
 `Options.FS` is for a product whose project has no OS path on the host,
 because its tools act in a container or a remote workspace: the
@@ -157,13 +180,17 @@ means no file.
 - A directory's file is the first of `Names` equal, byte for byte, to
   an entry the directory lists, on every host.
 - A returned file is byte for byte what is on disk, or in `FS`;
-  nothing is truncated, reflowed or summarised.
+  nothing is reflowed or summarised. Under `Truncate` alone, one file,
+  the last returned, may be a prefix of it ending at a line boundary,
+  followed by the marker, and is then in `Result.Omitted` as
+  `Truncated`.
 - With `FS` set, every name `Chain` asks it for is `fs.ValidPath`;
   with `FS` nil, behaviour is as before `FS` existed.
-- Every file `Chain` found and did not return is in `Result.Omitted`
-  with the reason. A file is read only when its stat size would be
-  included; a file read and found over a bound is reported, not
-  returned.
+- Every file `Chain` found and did not return whole is in
+  `Result.Omitted` with the reason. A file is read only when its stat
+  size would be included, or, under `Truncate`, when it is the first
+  over a budget; a file read and found over a bound is reported, and
+  returned only as a cut under `Truncate`.
 - The bounds apply to the bytes read. A breached `Budget` is never an
   error; a file that reads over `MaxBytes` always is.
 - The package imports the standard library only.
@@ -187,7 +214,8 @@ paths; a link out of an `os.Root` must be an error.
   what was found, included and omitted; a manifest would add the
   SHA-256 of each included file and a place for it in the session,
   decided with `agentsession` alongside the same question for skills.
-- `Budget` has no default. Codex's is 32 KiB, but Codex truncates to
-  fit and this package does not, so a default would drop whole files;
-  whether to do that is the product's call. Reopen if every product
-  ends up setting the same value.
+- `Budget` has no default. Codex's is 32 KiB and Codex truncates to
+  fit; this package leaves whole files out unless `Truncate` is set,
+  so a default would drop whole files for a product that has not
+  chosen; whether to do that is the product's call. Reopen if every
+  product ends up setting the same value.

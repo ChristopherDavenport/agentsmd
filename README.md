@@ -17,7 +17,7 @@ if err != nil {
 	return err
 }
 for _, o := range res.Omitted {
-	log.Printf("%s (%d bytes): %s", o.Path, o.Size, o.Reason) // shadowed or over budget
+	log.Printf("%s (%d bytes): %s", o.Path, o.Size, o.Reason) // shadowed, over budget or truncated
 }
 cfg.Instructions = agentsmd.Render(res.Files)
 ```
@@ -31,15 +31,16 @@ their home directory, is the farthest of the lot: Codex reads
 `~/.codex/AGENTS.md` before the repository's files for that reason, and
 the repository's nearest file still has the last word. `Budget` caps the
 total and is spent in that same order: the first file that would exceed
-it ends the chain, nothing is cut short, and running out is not an
-error. `RenderedBudget` caps `Render`'s output the same way, wrapper and
-paths included, for a product that bounds its prompt rather than the
-files. `Budget` and `MaxBytes` count the bytes a file reads, not the
+it ends the chain, nothing is cut short unless `Truncate` is set, and
+running out is not an error. `RenderedBudget` caps `Render`'s output
+the same way, wrapper and paths included, for a product that bounds its
+prompt rather than the files. `Budget` and `MaxBytes` count the bytes a file reads, not the
 size its stat reported, so an `FS` that expands a file as it reads it is
 held to them too. Every file found and left out, shadowed by a preferred
 name or over budget, is in `Result.Omitted` with its size and its path,
-so a product can tell the user and a session can record what the model
-was not given as well as what it was.
+and so is a file `Truncate` cut, with the bytes it cut off, so a product
+can tell the user and a session can record what the model was not given
+as well as what it was.
 
 `Render` wraps the files as pi renders `<project_context>`: one
 `<project_instructions path="...">` per file, in order. The result is
@@ -89,10 +90,22 @@ or whether one file imports another. This library decides:
 - **Combining.** One file per directory from `Root` down to the path's
   directory, farthest first and nearest last, so the nearest is the
   last text the model reads; `Extra` comes before them all.
-- **Size.** Nothing is cut short. A file over `MaxBytes` is an error;
-  the first file over `Budget` (the files) or `RenderedBudget` (the
-  rendering) ends the chain without error. All three count the bytes a
-  file reads, not the size its stat reported.
+- **Size.** A file over `MaxBytes` is an error; the first file over
+  `Budget` (the files) or `RenderedBudget` (the rendering) ends the
+  chain without error. All three count the bytes a file reads, not the
+  size its stat reported. By default that file is left out whole and
+  nothing is cut short.
+- **Truncation.** With `Truncate`, the first file over a budget is cut
+  rather than left out: it keeps its longest prefix, empty or ending in
+  `\n`, that fits both budgets followed by the line
+  `[agentsmd: N bytes of PATH left out over the budget]\n`. `N` is the
+  bytes cut off and `PATH` the file's path as `Chain` returns it; the
+  marker counts against the budgets. The cut file keeps its place in
+  the chain, last, so its first part still refines the files before
+  it, and is reported in `Result.Omitted` as `Truncated` with `N` as
+  its size; every later file is `OverBudget`. If the marker alone does
+  not fit, the file is left out whole. The file is read to be cut, so
+  `MaxBytes` still makes it an error.
 - **Paths in the budget.** `RenderedBudget` counts each path as `Chain`
   returns it; rewriting `File.Path` before `Render` changes the size.
 - **Rendering.** `<project_context>\n`, then per file

@@ -5,6 +5,20 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: `Options.Truncate`. Under it, the first file that does not fit
+  `Budget` or `RenderedBudget` is cut instead of left out whole: it
+  keeps the longest part that ends at a line boundary and fits with a
+  marker line after it, `[agentsmd: N bytes of PATH left out over the
+  budget]`, which counts against the budgets. The cut file keeps its
+  place in `Result.Files` and is also in `Result.Omitted` with the new
+  reason `Truncated` and the `N` bytes cut off as its `Size`; every
+  later file is `OverBudget`. A file the marker alone does not fit is
+  left out whole, as before. The file to cut is read whatever its stat
+  says, so it is held to `MaxBytes`, which stays an error. Off by
+  default; without it nothing changes (#13).
+
 ## v0.0.4 - 2026-10-27
 
 - Changed: a directory's file is the first of `Options.Names` equal,
