@@ -18,6 +18,7 @@
 package agentsmd
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -92,7 +93,7 @@ type Options struct {
 	// it, is left out and reported in [Result.Omitted], and Chain
 	// returns what fits without error, so a large file deep in a tree
 	// degrades the prompt rather than failing the run. No file is cut
-	// short. Zero means no budget.
+	// short unless [Options.Truncate] is set. Zero means no budget.
 	//
 	// The bytes charged are the bytes read. The size the file system
 	// reports decides only whether a file is read: one whose reported
@@ -114,6 +115,30 @@ type Options struct {
 	// Options.FS as a workspace path, changes the rendered size, and
 	// must bound the rewritten rendering itself.
 	RenderedBudget int64
+	// Truncate cuts the first file that does not fit Budget or
+	// RenderedBudget instead of leaving it out whole, so the file
+	// keeps its first part. The cut file is the longest prefix of it
+	// that ends at a line boundary and, followed by a marker line
+	//
+	//	[agentsmd: N bytes of PATH left out over the budget]
+	//
+	// fits both budgets, marker included. N is the bytes cut off the
+	// end and PATH the file's path as Chain returns it. The cut file
+	// keeps its place in [Result.Files], and is also in
+	// [Result.Omitted] as [Truncated] with N for its size; every file
+	// after it is left out as [OverBudget]. When not even the marker
+	// fits, the file is left out as OverBudget, as without Truncate.
+	//
+	// A file whose reported size does not fit is read no further than
+	// one byte past the room the budgets leave, or past MaxBytes when
+	// that is less, so an endless file is cut too. When the read stops
+	// there, before the file ends, N is the reported size less the
+	// bytes kept. Truncate turns no omission into an error: such a
+	// file that reads over MaxBytes with room to spare is left out as
+	// OverBudget, as without Truncate. A file whose reported size fits
+	// is read and held to MaxBytes as without Truncate, and cut from
+	// what it read when it does not fit. False leaves every file whole.
+	Truncate bool
 }
 
 // File is one instruction file, read verbatim.
@@ -150,9 +175,11 @@ type Omitted struct {
 	// Path is absolute, or the name in [Options.FS] as for
 	// [File.Path], and is the omitted file's stable key.
 	Path string
-	// Size is the file's size in bytes: the bytes read, for a file
-	// Chain read and left out over budget, and otherwise the size the
-	// file system reported.
+	// Size is the bytes left out. For [Truncated], those are the
+	// bytes cut off the end of the file. Otherwise the whole file is
+	// left out and Size is its size: the bytes read, for a file Chain
+	// read and left out over budget, and otherwise the size the file
+	// system reported.
 	Size int64
 	// Reason says why the file is not in [Result.Files].
 	Reason Reason
@@ -161,27 +188,33 @@ type Omitted struct {
 	By string
 }
 
-// Reason is why [Chain] left a file out.
+// Reason is why [Chain] left a file, or part of one, out.
 type Reason int
 
 const (
 	// OverBudget: the file, or one before it, would have taken the
 	// total over Options.Budget, or the rendering over
 	// Options.RenderedBudget, and the chain ends at the first such
-	// file.
+	// file, or at the file cut before it under Options.Truncate.
 	OverBudget Reason = iota
 	// Shadowed: an earlier name in Options.Names exists in the same
 	// directory and stands for it.
 	Shadowed
+	// Truncated: under Options.Truncate, the file was the first that
+	// did not fit, and its end was cut off. The rest of it is in
+	// [Result.Files], and the chain ends with it.
+	Truncated
 )
 
-// String returns "over budget" or "shadowed".
+// String returns "over budget", "shadowed" or "truncated".
 func (r Reason) String() string {
 	switch r {
 	case OverBudget:
 		return "over budget"
 	case Shadowed:
 		return "shadowed"
+	case Truncated:
+		return "truncated"
 	}
 	return "reason(" + strconv.Itoa(int(r)) + ")"
 }
@@ -195,9 +228,12 @@ var ErrTooLarge = errors.New("agentsmd: file exceeds size limit")
 // farthest first and nearest last, within opts.Budget and
 // opts.RenderedBudget. A file found and not included, because a
 // preferred name shadows it or a budget is spent, is in
-// [Result.Omitted]. A file is read only when its reported size fits
-// the budgets, and the bounds apply to the bytes it reads: more than
-// opts.MaxBytes is an error, and more than a budget has left omits it.
+// [Result.Omitted], and so is a file cut under opts.Truncate. A file
+// is read whole only when its reported size fits the budgets, and the
+// bounds apply to the bytes it reads: more than opts.MaxBytes is an
+// error, and more than a budget has left omits it, or cuts it under
+// opts.Truncate. Under opts.Truncate the first file whose reported
+// size does not fit is read only as far as could fit, and cut.
 // A directory that cannot be listed is an error. path
 // may be a directory, an existing file, or a file about to be
 // created, whose directory is then the start. With opts.FS set, path
@@ -242,14 +278,118 @@ func Chain(path string, opts Options) (Result, error) {
 		spent = true
 		res.Omitted = append(res.Omitted, Omitted{Path: path, Size: size, Reason: OverBudget})
 	}
+	// include adds content as the file at path.
+	include := func(path, content string, newline bool) {
+		n := int64(len(content))
+		rendered += renderedCost(len(res.Files) == 0, path, n, newline)
+		res.Files = append(res.Files, File{Path: path, Content: content})
+		total += n
+	}
+	// room is the most content the file at path could add within both
+	// budgets, with no newline from Render.
+	room := func(path string) int64 {
+		r := int64(math.MaxInt64)
+		if opts.Budget > 0 {
+			r = opts.Budget - total
+		}
+		if opts.RenderedBudget > 0 {
+			r = min(r, opts.RenderedBudget-rendered-renderedCost(len(res.Files) == 0, path, 0, false))
+		}
+		return r
+	}
+	// cut includes the longest prefix of data that ends at a line
+	// boundary and fits both budgets with the marker after it, and
+	// records the file as Truncated, ending the chain. data is the
+	// file's first bytes and size its whole size, so size less the
+	// prefix is the bytes left out. It reports false, having changed
+	// nothing, when not even the marker fits. The marker ends in a
+	// newline, so Render adds none.
+	cut := func(path string, data []byte, size int64) bool {
+		kept := int64(-1)
+		// Each boundary further on keeps more bytes and leaves out
+		// fewer, whose count is no more than one digit shorter, so the
+		// cost never falls and the first boundary that does not fit
+		// ends the search.
+		for k := int64(0); k < int64(len(data)); {
+			if !fits(path, k+int64(len(marker(path, size-k))), false) {
+				break
+			}
+			kept = k
+			i := bytes.IndexByte(data[k:], '\n')
+			if i < 0 {
+				break
+			}
+			k += int64(i) + 1
+		}
+		if kept < 0 {
+			return false
+		}
+		include(path, string(data[:kept])+marker(path, size-kept), false)
+		spent = true
+		res.Omitted = append(res.Omitted, Omitted{Path: path, Size: size - kept, Reason: Truncated})
+		return true
+	}
+	// truncate is consider under opts.Truncate for a file whose
+	// reported size does not fit: it reads no more than one byte past
+	// what could fit, or past maxBytes when that is less, and cuts the
+	// file from what it read. A file that reads over maxBytes with room
+	// to spare is left out as it would be without Truncate, unread
+	// past maxBytes, so Truncate turns no omission into an error.
+	truncate := func(path string, size int64, open func(string) (io.ReadCloser, error)) error {
+		r := room(path)
+		if r < int64(len(marker(path, 0))) {
+			over(path, size)
+			return nil
+		}
+		limit := min(r, maxBytes)
+		data, err := readAtMost(open, path, limit)
+		if err != nil {
+			return fmt.Errorf("agentsmd: %w", err)
+		}
+		n := int64(len(data))
+		switch {
+		case n <= limit:
+			// The file ended short of its reported size, within maxBytes
+			// and the room left, so it is judged on its bytes as any
+			// file read whole is.
+			content := string(data)
+			newline := !strings.HasSuffix(content, "\n")
+			if fits(path, n, newline) {
+				include(path, content, newline)
+				return nil
+			}
+			if !cut(path, data, n) {
+				over(path, n)
+			}
+		case limit < r:
+			over(path, size)
+		default:
+			// The read stopped one byte past the room left, before the
+			// end of the file, so the bytes left out are counted from
+			// its reported size, which is more than the room: the
+			// reported size did not fit.
+			if !cut(path, data, size) {
+				over(path, size)
+			}
+		}
+		return nil
+	}
 	// consider includes the file at path, opened with open, when the
 	// budget allows and records it as omitted from the first file that
-	// does not fit. The reported size decides whether to read it; the
-	// bytes read decide the rest.
+	// does not fit, after cutting that file under opts.Truncate. The
+	// reported size decides whether to read it whole; the bytes read
+	// decide the rest.
 	consider := func(path string, size int64, open func(string) (io.ReadCloser, error)) error {
+		if spent {
+			over(path, size)
+			return nil
+		}
 		// Before the read, the newline Render may add is not counted,
 		// so a file is never left unread that would have fit.
-		if spent || !fits(path, size, false) {
+		if !fits(path, size, false) {
+			if opts.Truncate {
+				return truncate(path, size, open)
+			}
 			over(path, size)
 			return nil
 		}
@@ -263,13 +403,13 @@ func Chain(path string, opts Options) (Result, error) {
 		}
 		content := string(data)
 		newline := !strings.HasSuffix(content, "\n")
-		if !fits(path, n, newline) {
-			over(path, n)
+		if fits(path, n, newline) {
+			include(path, content, newline)
 			return nil
 		}
-		rendered += renderedCost(len(res.Files) == 0, path, n, newline)
-		res.Files = append(res.Files, File{Path: path, Content: content})
-		total += n
+		if !opts.Truncate || !cut(path, data, n) {
+			over(path, n)
+		}
 		return nil
 	}
 	for _, extra := range opts.Extra {
@@ -429,6 +569,12 @@ func fsDirs(fsys fs.FS, name, root string) ([]string, error) {
 		}
 	}
 	return dirs, nil
+}
+
+// marker is the line [Options.Truncate] puts after the part of the
+// file at path that it keeps, saying how many bytes it left out.
+func marker(path string, left int64) string {
+	return "[agentsmd: " + strconv.FormatInt(left, 10) + " bytes of " + path + " left out over the budget]\n"
 }
 
 // openOS opens an OS file for reading.
