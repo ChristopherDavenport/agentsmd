@@ -103,7 +103,7 @@ func TestChainFSMatchesOS(t *testing.T) {
 				}
 				var wantOmitted []Omitted
 				for _, o := range want.Omitted {
-					wantOmitted = append(wantOmitted, Omitted{Path: name(o.Path), Size: o.Size, Reason: o.Reason, By: name(o.By)})
+					wantOmitted = append(wantOmitted, Omitted{Path: name(o.Path), Size: o.Size, Kept: o.Kept, Reason: o.Reason, By: name(o.By)})
 				}
 				if !reflect.DeepEqual(got.Files, wantFiles) {
 					t.Errorf("Files = %+v, want %+v", got.Files, wantFiles)
@@ -116,6 +116,52 @@ func TestChainFSMatchesOS(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestChainTruncateFSMatchesOS: under Truncate, a file cut in the OS
+// walk and through an FS keeps the same lines and reports the same
+// Kept and Size, when each walk's budget leaves the same room beside its
+// own marker, which names the file by its absolute path in one and by
+// its name in the FS in the other. The fixture's files are all shorter
+// than a marker, so the tree is written at test time.
+func TestChainTruncateFSMatchesOS(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := "a line of the root file, 34 bytes\n"
+	data := strings.Repeat(line, 20) // 680 bytes
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const kept = 4 * 34
+	left := int64(len(data) - kept)
+	// Four lines and the marker for the rest; a fifth line does not fit.
+	budget := func(path string) int64 { return kept + int64(len(marker(path, left))) }
+	abs := filepath.Join(root, "AGENTS.md")
+	want, err := Chain(root, Options{Root: root, Truncate: true, Budget: budget(abs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantOS := []Omitted{{Path: abs, Size: left, Kept: kept, Reason: Truncated}}; !reflect.DeepEqual(want.Omitted, wantOS) {
+		t.Fatalf("OS walk: Omitted = %+v, want %+v", want.Omitted, wantOS)
+	}
+	for fsName, fsys := range map[string]fs.FS{"os.DirFS": os.DirFS(root), "fstest.MapFS": treeFS(t, root)} {
+		t.Run(fsName, func(t *testing.T) {
+			got, err := Chain(".", Options{FS: fsys, Truncate: true, Budget: budget("AGENTS.md")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			o := want.Omitted[0]
+			if wantFS := []Omitted{{Path: "AGENTS.md", Size: o.Size, Kept: o.Kept, Reason: Truncated}}; !reflect.DeepEqual(got.Omitted, wantFS) {
+				t.Errorf("Omitted = %+v, want %+v", got.Omitted, wantFS)
+			}
+			wantFiles := []File{{Path: "AGENTS.md", Content: data[:kept] + marker("AGENTS.md", left)}}
+			if !reflect.DeepEqual(got.Files, wantFiles) {
+				t.Errorf("Files = %q, want %q", got.Files, wantFiles)
+			}
+		})
 	}
 }
 
