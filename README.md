@@ -113,9 +113,9 @@ or whether one file imports another. This library decides:
   stat does not fit is read no further than one byte past the room the
   budgets leave, or past `MaxBytes` when that is less, so an endless
   file is cut too; when the read stops before the file ends, `N` is
-  the stat's size less the bytes kept. `Truncate` turns no omission into an error: such
-  a file that reads over `MaxBytes` with room to spare is left out
-  whole, as without it.
+  the stat's size less the bytes kept. `Truncate` turns no omission
+  into an error: such a file that reads over `MaxBytes` with room to
+  spare is left out whole, as without it.
 - **Paths in the budget.** `RenderedBudget` counts each path as `Chain`
   returns it; rewriting `File.Path` before `Render` changes the size.
 - **Rendering.** `<project_context>\n`, then per file

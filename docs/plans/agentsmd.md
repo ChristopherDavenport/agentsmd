@@ -147,8 +147,8 @@ before it; it is also in `Result.Omitted` as `Truncated`, with the bytes
 cut off as its size and the bytes kept ahead of the marker as `Kept`,
 and every later file is `OverBudget`, as the chain ends there. Both
 numbers are in the report so a product need not parse the marker,
-whose wording is written for the model and may change, to learn how much of the
-file the model was given (#15).
+whose wording is written for the model and may change, to learn how
+much of the file the model was given (#15).
 
 The cut needs only the prefix that fits, so a file whose stat does not
 fit is read no further than one byte past the room the budgets leave,
