@@ -5,6 +5,17 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: `Omitted.Kept`, for a file cut under `Truncate`, the bytes of
+  the file kept ahead of the marker; `Kept` plus `Size` is the file's
+  size as `Size` counts it. A product learns how much of a cut file
+  reached the model without parsing the marker's wording (#15).
+- Documented: a cut under `Truncate` always ends at a line boundary,
+  so a file with no line that fits beside the marker, such as one long
+  line of minified text, is cut to the marker alone, with `Kept` 0;
+  there is no fallback to a cut mid-line. A test pins it (#16).
+
 ## v0.0.5 - 2026-11-08
 
 - Added: `Options.Truncate`. Under it, the first file that does not fit
