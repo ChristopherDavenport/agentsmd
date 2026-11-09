@@ -78,7 +78,7 @@ type File struct {
 type Omitted struct {
     Path   string // absolute, or the name in FS
     Size   int64  // the bytes left out: for Truncated, those cut off the end
-    Kept   int64  // for Truncated, the bytes kept ahead of the marker; Kept+Size is the file's size
+    Kept   int64  // for Truncated, the bytes kept ahead of the marker; Kept+Size is the file's size as Size counts it
     Reason Reason // OverBudget, Shadowed or Truncated
     By     string // the file that stood in for it, for Shadowed
 }
@@ -147,7 +147,7 @@ before it; it is also in `Result.Omitted` as `Truncated`, with the bytes
 cut off as its size and the bytes kept ahead of the marker as `Kept`,
 and every later file is `OverBudget`, as the chain ends there. Both
 numbers are in the report so a product need not parse the marker,
-whose wording is the model's and may change, to learn how much of the
+whose wording is written for the model and may change, to learn how much of the
 file the model was given (#15).
 
 The cut needs only the prefix that fits, so a file whose stat does not
@@ -199,11 +199,10 @@ means no file.
   nothing is reflowed or summarised. Under `Truncate` alone, one file,
   the last returned, may be a prefix of it ending at a line boundary,
   followed by the marker, and is then in `Result.Omitted` as
-  `Truncated`. A cut MUST end at a line boundary. When no line of the
-  file fits with the marker, as with a single long line of minified
-  text, the part kept is empty and the marker alone is sent, so the
-  model still learns the file exists and how much of it was left out
-  (#16).
+  `Truncated`. When no line of the file fits with the marker, as with
+  a single long line of minified text, the part kept is empty and the
+  marker alone is sent, so the model still learns the file exists and
+  how much of it was left out (#16).
 - When a file is cut to fit, its `Omitted` gives both the bytes kept
   ahead of the marker (`Kept`) and the bytes left out (`Size`), which
   sum to the file's size as `Size` counts it; a product never needs to

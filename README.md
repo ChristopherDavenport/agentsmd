@@ -109,11 +109,11 @@ or whether one file imports another. This library decides:
   the file fits with the marker, as with one long line of minified
   text, the marker alone is sent, with `Kept` 0, so the model still
   learns the file exists and how much of it was left out. If the
-  marker alone does not fit, the file is left out whole. A file whose stat does not fit
-  is read no further than one byte past the room the budgets leave, or
-  past `MaxBytes` when that is less, so an endless file is cut too;
-  when the read stops before the file ends, `N` is the stat's size
-  less the bytes kept. `Truncate` turns no omission into an error: such
+  marker alone does not fit, the file is left out whole. A file whose
+  stat does not fit is read no further than one byte past the room the
+  budgets leave, or past `MaxBytes` when that is less, so an endless
+  file is cut too; when the read stops before the file ends, `N` is
+  the stat's size less the bytes kept. `Truncate` turns no omission into an error: such
   a file that reads over `MaxBytes` with room to spare is left out
   whole, as without it.
 - **Paths in the budget.** `RenderedBudget` counts each path as `Chain`
