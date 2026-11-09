@@ -199,7 +199,11 @@ means no file.
   nothing is reflowed or summarised. Under `Truncate` alone, one file,
   the last returned, may be a prefix of it ending at a line boundary,
   followed by the marker, and is then in `Result.Omitted` as
-  `Truncated`.
+  `Truncated`. A cut MUST end at a line boundary. When no line of the
+  file fits with the marker, as with a single long line of minified
+  text, the part kept is empty and the marker alone is sent, so the
+  model still learns the file exists and how much of it was left out
+  (#16).
 - When a file is cut to fit, its `Omitted` gives both the bytes kept
   ahead of the marker (`Kept`) and the bytes left out (`Size`), which
   sum to the file's size as `Size` counts it; a product never needs to

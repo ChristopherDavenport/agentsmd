@@ -19,6 +19,8 @@ func TestChainTruncate(t *testing.T) {
 	// 208 bytes, with line boundaries after 4, 8 and 108, and a last
 	// line with no newline.
 	sub := "one\ntwo\n" + strings.Repeat("t", 99) + "\n" + strings.Repeat("n", 100)
+	// One 300-byte line with no line boundary in it, as minified text is.
+	minified := strings.Repeat("m", 300)
 	fsys := misreporting{
 		MapFS: fstest.MapFS{
 			"AGENTS.md":          {Data: []byte(root)},
@@ -27,6 +29,7 @@ func TestChainTruncate(t *testing.T) {
 			"big/AGENTS.md":      {Data: []byte(strings.Repeat("x\n", 200))},
 			"small/AGENTS.md":    {Data: []byte(strings.Repeat("x\n", 200))}, // stats as 10
 			"lies/AGENTS.md":     {Data: []byte(sub)},                        // stats as 1000
+			"min/AGENTS.md":      {Data: []byte(minified)},
 		},
 		sizes: map[string]int64{"lies/AGENTS.md": 1000, "small/AGENTS.md": 10},
 	}
@@ -69,6 +72,16 @@ func TestChainTruncate(t *testing.T) {
 			opts:    Options{Budget: 5 + int64(len(mark(208))), Truncate: true},
 			files:   []File{{"AGENTS.md", root}, {"sub/AGENTS.md", mark(208)}},
 			omitted: []Omitted{{Path: "sub/AGENTS.md", Size: 208, Reason: Truncated}, {Path: "sub/deep/AGENTS.md", Size: 5, Reason: OverBudget}},
+		},
+		{
+			// No line boundary ends a prefix that fits, and the cut is
+			// never made mid-line, so the room beyond the marker is left
+			// unused and the marker alone is sent.
+			name:    "a one-line file over the room is cut to the marker alone",
+			path:    "min",
+			opts:    Options{Budget: 5 + int64(len(marker("min/AGENTS.md", 300))) + 100, Truncate: true},
+			files:   []File{{"AGENTS.md", root}, {"min/AGENTS.md", marker("min/AGENTS.md", 300)}},
+			omitted: []Omitted{{Path: "min/AGENTS.md", Size: 300, Kept: 0, Reason: Truncated}},
 		},
 		{
 			name:    "a budget too small for the marker leaves the file out whole",

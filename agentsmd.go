@@ -128,8 +128,11 @@ type Options struct {
 	// [Result.Omitted] as [Truncated] with N for its size and the
 	// bytes kept ahead of the marker as [Omitted.Kept], so a product
 	// need not parse the marker for either; every file after it is
-	// left out as [OverBudget]. When not even the marker
-	// fits, the file is left out as OverBudget, as without Truncate.
+	// left out as [OverBudget]. The cut is never made mid-line: when
+	// no line of the file fits with the marker, as with a single long
+	// line of minified text, the part kept is empty and the marker
+	// alone is sent, with Kept 0. When not even the marker fits, the
+	// file is left out as OverBudget, as without Truncate.
 	//
 	// A file whose reported size does not fit is read no further than
 	// one byte past the room the budgets leave, or past MaxBytes when
