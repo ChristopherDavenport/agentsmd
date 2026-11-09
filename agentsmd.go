@@ -125,8 +125,10 @@ type Options struct {
 	// fits both budgets, marker included. N is the bytes cut off the
 	// end and PATH the file's path as Chain returns it. The cut file
 	// keeps its place in [Result.Files], and is also in
-	// [Result.Omitted] as [Truncated] with N for its size; every file
-	// after it is left out as [OverBudget]. When not even the marker
+	// [Result.Omitted] as [Truncated] with N for its size and the
+	// bytes kept ahead of the marker as [Omitted.Kept], so a product
+	// need not parse the marker for either; every file after it is
+	// left out as [OverBudget]. When not even the marker
 	// fits, the file is left out as OverBudget, as without Truncate.
 	//
 	// A file whose reported size does not fit is read no further than
@@ -181,6 +183,12 @@ type Omitted struct {
 	// read and left out over budget, and otherwise the size the file
 	// system reported.
 	Size int64
+	// Kept is the bytes of the file kept ahead of the marker, for
+	// [Truncated], so a product learns how much of the file reached
+	// the model without parsing the marker; Kept plus Size is the
+	// file's size as Size counts it. Zero otherwise, and zero too for
+	// a file cut to the marker alone.
+	Kept int64
 	// Reason says why the file is not in [Result.Files].
 	Reason Reason
 	// By is the path of the file that took this one's place, for
@@ -326,7 +334,7 @@ func Chain(path string, opts Options) (Result, error) {
 		}
 		include(path, string(data[:kept])+marker(path, size-kept), false)
 		spent = true
-		res.Omitted = append(res.Omitted, Omitted{Path: path, Size: size - kept, Reason: Truncated})
+		res.Omitted = append(res.Omitted, Omitted{Path: path, Size: size - kept, Kept: kept, Reason: Truncated})
 		return true
 	}
 	// truncate is consider under opts.Truncate for a file whose

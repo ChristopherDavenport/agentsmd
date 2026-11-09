@@ -52,7 +52,7 @@ func TestChainTruncate(t *testing.T) {
 			path:    "sub/deep",
 			opts:    Options{Budget: 5 + 8 + m200, Truncate: true},
 			files:   []File{{"AGENTS.md", root}, {"sub/AGENTS.md", "one\ntwo\n" + mark(200)}},
-			omitted: []Omitted{{Path: "sub/AGENTS.md", Size: 200, Reason: Truncated}, {Path: "sub/deep/AGENTS.md", Size: 5, Reason: OverBudget}},
+			omitted: []Omitted{{Path: "sub/AGENTS.md", Size: 200, Kept: 8, Reason: Truncated}, {Path: "sub/deep/AGENTS.md", Size: 5, Reason: OverBudget}},
 		},
 		{
 			// One byte short of "one\ntwo\n" and its marker: the cut
@@ -61,7 +61,7 @@ func TestChainTruncate(t *testing.T) {
 			path:    "sub/deep",
 			opts:    Options{Budget: 5 + 8 + m200 - 1, Truncate: true},
 			files:   []File{{"AGENTS.md", root}, {"sub/AGENTS.md", "one\n" + mark(204)}},
-			omitted: []Omitted{{Path: "sub/AGENTS.md", Size: 204, Reason: Truncated}, {Path: "sub/deep/AGENTS.md", Size: 5, Reason: OverBudget}},
+			omitted: []Omitted{{Path: "sub/AGENTS.md", Size: 204, Kept: 4, Reason: Truncated}, {Path: "sub/deep/AGENTS.md", Size: 5, Reason: OverBudget}},
 		},
 		{
 			name:    "the marker alone, when no line fits beside it",
@@ -92,7 +92,7 @@ func TestChainTruncate(t *testing.T) {
 			path:    "lies",
 			opts:    Options{Budget: 5 + 8 + int64(len(marker("lies/AGENTS.md", 992))), Truncate: true},
 			files:   []File{{"AGENTS.md", root}, {"lies/AGENTS.md", "one\ntwo\n" + marker("lies/AGENTS.md", 992)}},
-			omitted: []Omitted{{Path: "lies/AGENTS.md", Size: 992, Reason: Truncated}},
+			omitted: []Omitted{{Path: "lies/AGENTS.md", Size: 992, Kept: 8, Reason: Truncated}},
 		},
 		{
 			name:    "off: a file that stats over the budget is left out unread",
@@ -118,7 +118,7 @@ func TestChainTruncate(t *testing.T) {
 			path:    "big",
 			opts:    Options{Budget: 105, MaxBytes: 300, Truncate: true},
 			files:   []File{{"AGENTS.md", root}, {"big/AGENTS.md", strings.Repeat("x\n", 18) + marker("big/AGENTS.md", 364)}},
-			omitted: []Omitted{{Path: "big/AGENTS.md", Size: 364, Reason: Truncated}},
+			omitted: []Omitted{{Path: "big/AGENTS.md", Size: 364, Kept: 36, Reason: Truncated}},
 		},
 		{
 			// MaxBytes is reached before the room is, so the file is left
@@ -157,6 +157,7 @@ func TestChainTruncate(t *testing.T) {
 			if !reflect.DeepEqual(res.Omitted, tt.omitted) {
 				t.Errorf("Chain().Omitted = %+v, want %+v", res.Omitted, tt.omitted)
 			}
+			checkKept(t, res)
 			var total int64
 			for _, f := range res.Files {
 				total += int64(len(f.Content))
@@ -242,6 +243,10 @@ func TestChainTruncateSweep(t *testing.T) {
 				data := whole[f.Path].Content
 				o := res.Omitted[0]
 				kept := len(data) - int(o.Size)
+				if o.Kept != int64(kept) {
+					t.Fatalf("budget %d: Kept = %d, want %d", budget, o.Kept, kept)
+				}
+				checkKept(t, res)
 				if o.Path != f.Path || kept < 0 || f.Content != data[:kept]+marker(f.Path, o.Size) {
 					t.Fatalf("budget %d: cut file %q, omitted %+v, from %q", budget, f.Content, o, data)
 				}
@@ -359,6 +364,10 @@ func TestChainTruncateEndless(t *testing.T) {
 				t.Fatalf("Chain() = %+v, want AGENTS.md cut", res)
 			}
 			kept := size - res.Omitted[0].Size
+			if res.Omitted[0].Kept != kept {
+				t.Errorf("Kept = %d, want %d", res.Omitted[0].Kept, kept)
+			}
+			checkKept(t, res)
 			want := strings.Repeat("line\n", int(kept/5)) + marker("AGENTS.md", size-kept)
 			if kept <= 0 || kept%5 != 0 || res.Files[0].Content != want {
 				t.Errorf("Content = %q, Omitted = %+v; want whole lines and the marker", res.Files[0].Content, res.Omitted)
@@ -371,5 +380,30 @@ func TestChainTruncateEndless(t *testing.T) {
 				t.Errorf("rendering %d bytes, over %d", got, tt.opts.RenderedBudget)
 			}
 		})
+	}
+}
+
+// checkKept fails t unless every Truncated file in res.Omitted reports
+// as Kept the bytes of its content ahead of its marker, and every other
+// omission reports none.
+func checkKept(t *testing.T, res Result) {
+	t.Helper()
+	content := map[string]string{}
+	for _, f := range res.Files {
+		content[f.Path] = f.Content
+	}
+	for _, o := range res.Omitted {
+		want := int64(0)
+		if o.Reason == Truncated {
+			c, ok := content[o.Path]
+			if !ok {
+				t.Errorf("%s is Truncated but not in Files", o.Path)
+				continue
+			}
+			want = int64(len(c) - len(marker(o.Path, o.Size)))
+		}
+		if o.Kept != want {
+			t.Errorf("%s (%s): Kept = %d, want %d", o.Path, o.Reason, o.Kept, want)
+		}
 	}
 }

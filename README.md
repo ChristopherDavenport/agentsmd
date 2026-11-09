@@ -103,7 +103,9 @@ or whether one file imports another. This library decides:
   marker counts against the budgets. The cut file keeps its place in
   the chain, last, so its first part still refines the files before
   it, and is reported in `Result.Omitted` as `Truncated` with `N` as
-  its size; every later file is `OverBudget`. If the marker alone does
+  its size and the bytes kept ahead of the marker as `Kept`, so a
+  product need not parse the marker for either; every later file is
+  `OverBudget`. If the marker alone does
   not fit, the file is left out whole. A file whose stat does not fit
   is read no further than one byte past the room the budgets leave, or
   past `MaxBytes` when that is less, so an endless file is cut too;
